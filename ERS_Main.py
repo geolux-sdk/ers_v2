@@ -385,7 +385,7 @@ class ERSMainApp:
                 self.console(f">> {self.fault_message}", level="error")
                 return None
 
-        def cmds_check(cmds, no_cmd, field_name):
+        def cmds_check(cmds, no_cmd, field_name, allow_partial=False):
             if type(no_cmd) is not int or no_cmd < 0:
                 self.fault_message = (
                     f"JOB COMMAND COUNT INVALID: {field_name} expected count={no_cmd}"
@@ -409,6 +409,8 @@ class ERSMainApp:
             expected_width = len(self.config.settings["main"]["work_order"])
             outport_num = self.config.settings["relay"]["outport_num"]
 
+            padded_rows = []
+
             for row_index, row in enumerate(cmds, start=1):
                 if not isinstance(row, list):
                     self.fault_message = (
@@ -418,12 +420,17 @@ class ERSMainApp:
                     return False
 
                 if len(row) != expected_width:
-                    self.fault_message = (
-                        f"JOB COMMAND WIDTH MISMATCH: {field_name}[{row_index}] "
-                        f"length is {len(row)}, expected {expected_width}"
-                    )
-                    self.console(f">> {self.fault_message}", level="error")
-                    return False
+                    if allow_partial and 0 < len(row) < expected_width:
+                        original_width = len(row)
+                        row.extend([0] * (expected_width - len(row)))
+                        padded_rows.append((row_index, original_width))
+                    else:
+                        self.fault_message = (
+                            f"JOB COMMAND WIDTH MISMATCH: {field_name}[{row_index}] "
+                            f"length is {len(row)}, expected {expected_width}"
+                        )
+                        self.console(f">> {self.fault_message}", level="error")
+                        return False
 
                 for col_index, relay_number in enumerate(row, start=1):
                     if type(relay_number) is not int:
@@ -442,6 +449,19 @@ class ERSMainApp:
                         self.console(f">> {self.fault_message}", level="error")
                         return False
 
+            if padded_rows:
+                preview = ", ".join(
+                    f"{row_index}:{original_width}->{expected_width}"
+                    for row_index, original_width in padded_rows[:5]
+                )
+                if len(padded_rows) > 5:
+                    preview += ", ..."
+                self.console(
+                    f">> JOB COMMAND WIDTH PADDED: {field_name} rows {preview}; "
+                    "missing values set to 0",
+                    level="warning",
+                )
+
             self.logger.info(f"{field_name} check success")
             return True
 
@@ -455,6 +475,7 @@ class ERSMainApp:
                 job["TestADCCmds"],
                 job["NoTestADCCmds"],
                 "TestADCCmds",
+                allow_partial=True,
             ):
                 job["DataDir"] = job["DataDir"].replace("DataDC", "DataTestADC")
             else:
@@ -472,6 +493,7 @@ class ERSMainApp:
                 job["TestCmds"],
                 job["NoTestCmds"],
                 "TestCmds",
+                allow_partial=True,
             ):
                 job["DataDir"] = job["DataDir"].replace("DataDC", "DataTestEl")
             else:
