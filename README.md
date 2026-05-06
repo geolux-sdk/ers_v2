@@ -1,10 +1,12 @@
-# ERS V2 systemd 실행 가이드
+# ERS V2 Controller
 
 이 프로젝트는 Raspberry Pi에서 Python 3.9.2로 실행되는 ERS V2 Controller입니다.
 
 권장 실행 방식은 `systemd`가 직접 `ERS_Main.py`를 실행하고 재시작을 관리하는 방식입니다.
 
-## 실행 구조
+## systemd 설치 가이드
+
+### 실행 구조
 
 ```text
 systemd -> ERS_Main.py
@@ -12,7 +14,7 @@ systemd -> ERS_Main.py
 
 `systemd` 서비스에 `Restart=always`를 설정하면 `ERS_Main.py`가 종료되거나 예외로 중단되어도 자동으로 다시 실행됩니다.
 
-## Raspberry Pi 부팅 설정
+### Raspberry Pi 부팅 설정
 
 ERS에서 사용하는 UART와 GPIO 초기 상태를 사용하려면 Raspberry Pi의 부팅 설정 파일에 아래 내용을 미리 추가해야 합니다.
 
@@ -55,7 +57,7 @@ GPIO45      -> output, default low
 sudo reboot
 ```
 
-## 서비스 파일 위치
+### 서비스 파일 위치
 
 Raspberry Pi에서 아래 위치에 서비스 파일을 생성합니다.
 
@@ -69,7 +71,7 @@ Raspberry Pi에서 아래 위치에 서비스 파일을 생성합니다.
 sudo nano /etc/systemd/system/ers-v2.service
 ```
 
-## 서비스 파일 내용
+### 서비스 파일 내용
 
 ```ini
 [Unit]
@@ -89,7 +91,7 @@ Environment=PYTHONUNBUFFERED=1
 WantedBy=multi-user.target
 ```
 
-## 설정 의미
+### 설정 의미
 
 `WorkingDirectory=/home/pi/ers_v2`
 
@@ -111,7 +113,7 @@ Raspberry Pi의 Python 3.9.2로 `ERS_Main.py`를 실행합니다.
 
 `print()` 출력이 지연되지 않고 로그에 바로 기록되게 합니다.
 
-## 서비스 적용
+### 서비스 적용
 
 예제 서비스 파일을 복사하고 systemd에 등록하려면 설치 스크립트를 사용할 수 있습니다.
 
@@ -129,31 +131,31 @@ sudo systemctl enable ers-v2.service
 sudo systemctl restart ers-v2.service
 ```
 
-## 상태 확인
+### 상태 확인
 
 ```bash
 systemctl status ers-v2.service
 ```
 
-## 실시간 로그 확인
+### 실시간 로그 확인
 
 ```bash
 journalctl -u ers-v2.service -f
 ```
 
-## 서비스 중지
+### 서비스 중지
 
 ```bash
 sudo systemctl stop ers-v2.service
 ```
 
-## 자동 시작 해제
+### 자동 시작 해제
 
 ```bash
 sudo systemctl disable ers-v2.service
 ```
 
-## 중복 실행 주의
+### 중복 실행 주의
 
 ERS는 UDP 포트, serial 포트, GPIO를 직접 사용합니다. 같은 프로그램이 두 개 이상 동시에 실행되면 포트 bind 실패, serial 포트 충돌, 장비 제어 충돌이 발생할 수 있습니다.
 
