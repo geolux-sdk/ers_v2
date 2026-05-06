@@ -49,7 +49,7 @@
         "port": "/dev/ttyACM0",
         "baudrate": 115200,
         "sample_rate": 2400,
-        "busy_poll_interval_sec": 0.5
+        "busy_poll_interval_sec": 1.0
     },
     "udp": {
         "send_addr": "127.0.0.1",
