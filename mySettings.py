@@ -59,6 +59,7 @@ class mySettings:
             "port": "/dev/ttyACM0",
             "baudrate": 115200,
             "sample_rate": 2400,
+            "busy_poll_interval_sec": 0.5,
         },
         "udp": {
             # 로컬 테스트 기본값
@@ -148,6 +149,7 @@ class mySettings:
                     "comport": {"type": "string"},
                     "baudrate": {"type": "integer"},
                     "sample_rate": {"type": "number"},
+                    "busy_poll_interval_sec": {"type": "number"},
                 },
                 "anyOf": [
                     {"required": ["port"]},

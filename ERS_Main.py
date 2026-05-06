@@ -5,7 +5,11 @@ import time
 
 from jsonschema import ValidationError
 
-from ERS_ADC_Control import DEFAULT_BUSY_TIMEOUT_SEC, adc_controller
+from ERS_ADC_Control import (
+    DEFAULT_BUSY_POLL_INTERVAL_SEC,
+    DEFAULT_BUSY_TIMEOUT_SEC,
+    adc_controller,
+)
 from ERS_Power_Control import power_controller
 from ERS_Relay_Control import relay_board_controller
 from mySettings import mySettings
@@ -556,6 +560,21 @@ class ERSMainApp:
                 await self.safe_error_stop_async(job)
                 continue
 
+            try:
+                busy_poll_interval_sec = float(
+                    adc_settings.pop(
+                        "busy_poll_interval_sec",
+                        DEFAULT_BUSY_POLL_INTERVAL_SEC,
+                    )
+                )
+                if busy_poll_interval_sec <= 0:
+                    raise ValueError("busy_poll_interval_sec must be greater than 0")
+            except (TypeError, ValueError) as err:
+                self.fault_message = "ADC BUSY POLL INTERVAL INVALID"
+                self.console(f">> {self.fault_message}: {repr(err)}", level="error")
+                await self.safe_error_stop_async(job)
+                continue
+
             adc_comport = adc_settings.pop("comport", None)
             if "port" not in adc_settings and adc_comport is not None:
                 adc_settings["port"] = adc_comport
@@ -584,10 +603,12 @@ class ERSMainApp:
                 DEFAULT_BUSY_TIMEOUT_SEC,
                 expected_adc_duration_sec + 5.0,
             )
+            adc_param["busy_poll_interval_sec"] = busy_poll_interval_sec
             self.logger.info(
                 f"ADC busy timeout: expected_samples={expected_adc_samples}, "
                 f"expected_duration={expected_adc_duration_sec:.2f}s, "
-                f"busy_timeout={adc_param['busy_timeout_sec']:.2f}s"
+                f"busy_timeout={adc_param['busy_timeout_sec']:.2f}s, "
+                f"busy_poll_interval={busy_poll_interval_sec:.2f}s"
             )
 
             power_param = {
