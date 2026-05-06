@@ -8,7 +8,7 @@
     "name": "ERS V2 CONTROLLER",
     "version": "20260505",
     "main": {
-        "job_path": "./JSON",
+        "job_path": "/home/pi/cRho/JSON",
         "work_order": [
             "V+",
             "V-",
