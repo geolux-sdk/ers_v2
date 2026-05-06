@@ -1,0 +1,15 @@
+[Unit]
+Description=ERS V2 Controller
+After=multi-user.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ers_v2
+ExecStart=/usr/bin/python3 /home/pi/ers_v2/ERS_Main.py
+Restart=always
+RestartSec=1
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

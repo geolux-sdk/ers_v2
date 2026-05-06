@@ -1,0 +1,84 @@
+{
+    "logger": {
+        "folder": "./log",
+        "filename": "ERS.log",
+        "level": "DEBUG",
+        "console": true
+    },
+    "name": "ERS V2 CONTROLLER",
+    "version": "20260505",
+    "main": {
+        "job_path": "./JSON",
+        "work_order": [
+            "V+",
+            "V-",
+            "P1",
+            "P2",
+            "P3",
+            "P4",
+            "P5",
+            "P6",
+            "P7",
+            "P8",
+            "P9",
+            "P10",
+            "P11"
+        ]
+    },
+    "relay": {
+        "inport_num": 13,
+        "port_order": {
+            "V+": 1,
+            "V-": 2,
+            "P1": 3,
+            "P2": 4,
+            "P3": 5,
+            "P4": 6,
+            "P5": 7,
+            "P6": 8,
+            "P7": 9,
+            "P8": 10,
+            "P9": 11,
+            "P10": 12,
+            "P11": 13
+        },
+        "outport_num": 48,
+        "comport": "/dev/ttyAMA3"
+    },
+    "adc": {
+        "port": "/dev/ttyACM0",
+        "baudrate": 115200,
+        "sample_rate": 2400
+    },
+    "udp": {
+        "send_addr": "127.0.0.1",
+        "send_port": 3800,
+        "recv_port": 3700
+    },
+    "power": {
+        "comport": "/dev/ttyAMA2",
+        "baudrate": 115200,
+        "timeout": 0.5,
+        "device_id": 241,
+        "init_values": {
+            "control_start_stop": 0,
+            "target_voltage": 30,
+            "target_load_current": 100,
+            "input_voltage_gain": 150,
+            "input_voltage_offset": 0,
+            "load_voltage_gain": 150,
+            "load_voltage_offset": 0,
+            "load_current_gain": 1300,
+            "load_current_offset": 20,
+            "overvoltage_threshold": 400,
+            "overcurrent_threshold": 2000,
+            "soft_start_rate": 5000,
+            "kp_cv": 0.01,
+            "ki_cv": 0.002,
+            "kd_cv": 0,
+            "kp_cc": 0.5,
+            "ki_cc": 0.01,
+            "kd_cc": 0
+        }
+    }
+}
