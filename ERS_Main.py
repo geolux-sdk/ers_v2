@@ -249,6 +249,7 @@ class ERSMainApp:
 
     def send_msg(self, msg):
         try:
+            self.console(f">> UDP send_msg: {msg}")
             if self.udp is not None:
                 self.udp.send(f"{msg}".encode())
         except Exception as err:
