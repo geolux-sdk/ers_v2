@@ -11,16 +11,16 @@ LITTLE_ENDIAN = "<"
 ADC_ROWS = 3
 ADC_COLS = 4
 ADC_SAMPLE_COUNT = ADC_ROWS * ADC_COLS
-MEASURE_BLOCK_FORMAT = f"{LITTLE_ENDIAN}hH12I3I"
+MEASURE_BLOCK_FORMAT = f"{LITTLE_ENDIAN}hH{ADC_SAMPLE_COUNT}iI2I"
 MEASURE_BLOCK_SIZE = struct.calcsize(MEASURE_BLOCK_FORMAT)
-MEASURE_PAYLOAD_FORMAT = f"{LITTLE_ENDIAN}hH{ADC_SAMPLE_COUNT}II"
-MEASURE_PAYLOAD_SIZE = struct.calcsize(MEASURE_PAYLOAD_FORMAT)
+LEGACY_PAYLOAD_FORMAT = f"{LITTLE_ENDIAN}Hh{ADC_SAMPLE_COUNT}i"
+LEGACY_PAYLOAD_SIZE = struct.calcsize(LEGACY_PAYLOAD_FORMAT)
 
 if MEASURE_BLOCK_SIZE != 64:
     raise RuntimeError(f"Unexpected measure block size: {MEASURE_BLOCK_SIZE}")
 
-if MEASURE_PAYLOAD_SIZE != 56:
-    raise RuntimeError(f"Unexpected measure payload size: {MEASURE_PAYLOAD_SIZE}")
+if LEGACY_PAYLOAD_SIZE != 52:
+    raise RuntimeError(f"Unexpected legacy payload size: {LEGACY_PAYLOAD_SIZE}")
 
 
 @dataclass(frozen=True)
@@ -81,33 +81,93 @@ def parse_measure_stream(raw: bytes) -> list[MeasureData]:
     ]
 
 
-def serialize_measure_block_without_padding(block: MeasureData) -> bytes:
-    """Serialize one measurement block without the trailing padding fields."""
-    adc_flat = [
-        value
-        for row in block.adc_data
-        for value in row
-    ]
+def flatten_adc_data(block: MeasureData) -> list[int]:
+    """Return one block's 3x4 ADC data as a 12-value row."""
+    adc_flat = [value for row in block.adc_data for value in row]
 
     if len(adc_flat) != ADC_SAMPLE_COUNT:
         raise ValueError(
             f"ADC data must contain {ADC_SAMPLE_COUNT} values, got {len(adc_flat)}"
         )
 
+    return adc_flat
+
+
+def _median3(first: int, second: int, third: int) -> int:
+    values = [first, second, third]
+    values.sort()
+    return values[1]
+
+
+def median_correction(adc_rows: list[list[int]]) -> list[list[int]]:
+    """
+    Apply the legacy 3-sample median correction to each ADC channel.
+
+    This matches scipy.signal.medfilt(..., kernel_size=3) with zero padding.
+    """
+    if not adc_rows:
+        return []
+
+    corrected = [
+        [0] * ADC_SAMPLE_COUNT
+        for _ in adc_rows
+    ]
+
+    for channel_index in range(ADC_SAMPLE_COUNT):
+        for sample_index, row in enumerate(adc_rows):
+            prev_value = (
+                adc_rows[sample_index - 1][channel_index]
+                if sample_index > 0
+                else 0
+            )
+            current_value = row[channel_index]
+            next_value = (
+                adc_rows[sample_index + 1][channel_index]
+                if sample_index + 1 < len(adc_rows)
+                else 0
+            )
+            corrected[sample_index][channel_index] = _median3(
+                prev_value,
+                current_value,
+                next_value,
+            )
+
+    return corrected
+
+
+def serialize_legacy_measure_block(block: MeasureData, adc_flat: list[int]) -> bytes:
+    """Serialize one block as legacy time/fb/values bytes."""
+    if len(adc_flat) != ADC_SAMPLE_COUNT:
+        raise ValueError(
+            f"ADC data must contain {ADC_SAMPLE_COUNT} values, got {len(adc_flat)}"
+        )
+
     return struct.pack(
-        MEASURE_PAYLOAD_FORMAT,
+        LEGACY_PAYLOAD_FORMAT,
+        block.seq_num & 0xFFFF,
         block.bridge_state,
-        block.reserved,
         *adc_flat,
-        block.seq_num,
     )
 
 
-def strip_measure_stream_padding(raw: bytes) -> bytes:
-    """Return measurement stream bytes with each block's padding removed."""
+def convert_measure_stream_to_legacy_payload(raw: bytes) -> bytes:
+    """
+    Return legacy-compatible measurement bytes.
+
+    Output block format:
+        time: seq_num low 16 bits
+        fb: bridge_state
+        values: 12 median-corrected int32 ADC values
+    """
+    blocks = parse_measure_stream(raw)
+    corrected_adc_rows = median_correction([
+        flatten_adc_data(block)
+        for block in blocks
+    ])
+
     return b"".join(
-        serialize_measure_block_without_padding(block)
-        for block in parse_measure_stream(raw)
+        serialize_legacy_measure_block(block, corrected_adc_rows[index])
+        for index, block in enumerate(blocks)
     )
 
 

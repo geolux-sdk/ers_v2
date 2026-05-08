@@ -12,7 +12,7 @@ from typing import Optional
 
 import serial
 
-from parser import MEASURE_BLOCK_SIZE, strip_measure_stream_padding
+from parser import MEASURE_BLOCK_SIZE, convert_measure_stream_to_legacy_payload
 
 from ERS_ADC_Protocol import (
     ResponseCode,
@@ -57,9 +57,9 @@ def parse(data: bytes) -> bytes:
     """
     Parse or transform received ADC binary data before saving.
 
-    Validate the stream as 64-byte measurement blocks and remove padding fields.
+    Convert 64-byte measurement blocks into the legacy 52-byte save format.
     """
-    return strip_measure_stream_padding(data)
+    return convert_measure_stream_to_legacy_payload(data)
 
 
 class adc_controller:
