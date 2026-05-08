@@ -45,6 +45,15 @@ DEFAULT_BUSY_TIMEOUT_SEC = 10.0
 DEFAULT_BUSY_POLL_INTERVAL_SEC = 1.0
 
 
+def parse(data: bytes) -> bytes:
+    """
+    Parse or transform received ADC binary data before saving.
+
+    Placeholder implementation: return input data unchanged.
+    """
+    return data
+
+
 class adc_controller:
     """
     ERS ADC controller.
@@ -361,40 +370,40 @@ class adc_controller:
             expected_bytes,
         )
 
-        with open(output_file, "wb") as f:
-            while received_bytes < expected_bytes:
-                remain_bytes = expected_bytes - received_bytes
-                request_bytes = min(read_chunk_bytes, remain_bytes)
+        raw_data = bytearray()
 
-                data = ser.read(request_bytes)
+        while received_bytes < expected_bytes:
+            remain_bytes = expected_bytes - received_bytes
+            request_bytes = min(read_chunk_bytes, remain_bytes)
 
-                if data == b"":
-                    self.logger.warning(
-                        "Serial read timeout: received_bytes=%d / %d",
-                        received_bytes,
-                        expected_bytes,
-                    )
-                    break
+            data = ser.read(request_bytes)
 
-                f.write(data)
-                received_bytes += len(data)
+            if data == b"":
+                self.logger.warning(
+                    "Serial read timeout: received_bytes=%d / %d",
+                    received_bytes,
+                    expected_bytes,
+                )
+                break
 
-                now = time.time()
-                if now - last_log_time >= 1.0:
-                    self.logger.info(
-                        "Receiving... %d / %d bytes",
-                        received_bytes,
-                        expected_bytes,
-                    )
-                    last_log_time = now
+            raw_data.extend(data)
+            received_bytes += len(data)
+
+            now = time.time()
+            if now - last_log_time >= 1.0:
+                self.logger.info(
+                    "Receiving... %d / %d bytes",
+                    received_bytes,
+                    expected_bytes,
+                )
+                last_log_time = now
 
         elapsed = time.time() - start_time
         received_samples = received_bytes // BYTES_PER_SAMPLE
         remain_partial_bytes = received_bytes % BYTES_PER_SAMPLE
 
         self.logger.info(
-            "ADC data saved: %s, received_samples=%d, received_bytes=%d, elapsed=%.2f sec",
-            output_file,
+            "ADC data received: received_samples=%d, received_bytes=%d, elapsed=%.2f sec",
             received_samples,
             received_bytes,
             elapsed,
@@ -417,6 +426,17 @@ class adc_controller:
             )
             self.logger.error(message)
             raise RuntimeError(message)
+
+        parsed_data = parse(bytes(raw_data))
+
+        with open(output_file, "wb") as f:
+            f.write(parsed_data)
+
+        self.logger.info(
+            "ADC data saved: %s, parsed_bytes=%d",
+            output_file,
+            len(parsed_data),
+        )
 
         return received_samples
 
