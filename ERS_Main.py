@@ -780,12 +780,25 @@ class ERSMainApp:
             except Exception as err:
                 self.console(f">> Disable test mode failed: {repr(err)}", level="error")
 
+        if self.fault_message == "CANCEL BY USER":
+            self.job = None
+            self.send_msg(self.fault_message)
+            self.set_state("READY")
+            self.console(
+                f">> Cancel Stop and Send Message: {self.fault_message}",
+                level="warning",
+            )
+            return
+
         self.send_FAIL()
 
         if self.fault_message:
             self.send_msg(self.fault_message)
 
-        self.console(">> Error Stop and Send Fail", level="error")
+        self.console(
+            f">> Error Stop and Send Fail: {self.fault_message}",
+            level="error",
+        )
 
     async def safe_normal_stop_async(self, job):
         """
@@ -814,71 +827,6 @@ class ERSMainApp:
                 if self.gpio is not None:
                     self.gpio.disable_test_mode()
                     await asyncio.sleep(1.0)
-            except Exception as err:
-                self.console(f">> Disable test mode failed: {repr(err)}", level="error")
-
-    def safe_error_stop(self, job):
-        """
-        작업 실패 또는 사용자 취소 시 장비를 안전하게 정지한다.
-        """
-        try:
-            if self.relay is not None:
-                self.relay.clear()
-        except Exception as err:
-            self.console(f">> Relay clear failed during error stop: {repr(err)}", level="error")
-
-        try:
-            if self.power is not None:
-                self.power.stop()
-        except Exception as err:
-            self.console(f">> Power stop failed during error stop: {repr(err)}", level="error")
-
-        try:
-            if self.gpio is not None:
-                self.gpio.disable_booster()
-        except Exception as err:
-            self.console(f">> Disable booster failed during error stop: {repr(err)}", level="error")
-
-        if job.get("DoADCTest", False):
-            try:
-                if self.gpio is not None:
-                    self.gpio.disable_test_mode()
-            except Exception as err:
-                self.console(f">> Disable test mode failed: {repr(err)}", level="error")
-
-        self.send_FAIL()
-
-        if self.fault_message:
-            self.send_msg(self.fault_message)
-
-        self.console(">> Error Stop and Send Fail", level="error")
-
-    def safe_normal_stop(self, job):
-        """
-        작업 정상 완료 시 장비를 안전하게 정지한다.
-        """
-        try:
-            if self.relay is not None:
-                self.relay.clear()
-        except Exception as err:
-            self.console(f">> Relay clear failed during normal stop: {repr(err)}", level="error")
-
-        try:
-            if self.power is not None:
-                self.power.stop()
-        except Exception as err:
-            self.console(f">> Power stop failed during normal stop: {repr(err)}", level="error")
-
-        try:
-            if self.gpio is not None:
-                self.gpio.disable_booster()
-        except Exception as err:
-            self.console(f">> Disable booster failed during normal stop: {repr(err)}", level="error")
-
-        if job.get("DoADCTest", False):
-            try:
-                if self.gpio is not None:
-                    self.gpio.disable_test_mode()
             except Exception as err:
                 self.console(f">> Disable test mode failed: {repr(err)}", level="error")
 
