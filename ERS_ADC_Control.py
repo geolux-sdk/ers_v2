@@ -12,6 +12,8 @@ from typing import Optional
 
 import serial
 
+from parser import MEASURE_BLOCK_SIZE, strip_measure_stream_padding
+
 from ERS_ADC_Protocol import (
     ResponseCode,
     build_setup_command,
@@ -44,14 +46,20 @@ DEFAULT_READ_CHUNK_SAMPLES = 200
 DEFAULT_BUSY_TIMEOUT_SEC = 10.0
 DEFAULT_BUSY_POLL_INTERVAL_SEC = 1.0
 
+if MEASURE_BLOCK_SIZE != BYTES_PER_SAMPLE:
+    raise RuntimeError(
+        "ADC parser block size mismatch: "
+        f"parser={MEASURE_BLOCK_SIZE}, control={BYTES_PER_SAMPLE}"
+    )
+
 
 def parse(data: bytes) -> bytes:
     """
     Parse or transform received ADC binary data before saving.
 
-    Placeholder implementation: return input data unchanged.
+    Validate the stream as 64-byte measurement blocks and remove padding fields.
     """
-    return data
+    return strip_measure_stream_padding(data)
 
 
 class adc_controller:
