@@ -12,7 +12,11 @@ from typing import Optional
 
 import serial
 
-from parser import MEASURE_BLOCK_SIZE, convert_measure_stream_to_legacy_payload
+from parser import (
+    MEASURE_BLOCK_SIZE,
+    convert_measure_stream_to_legacy_payload,
+    write_legacy_payload_csv,
+)
 
 from ERS_ADC_Protocol import (
     ResponseCode,
@@ -85,12 +89,17 @@ class adc_controller:
         baudrate: int = DEFAULT_BAUDRATE,
         timeout: float = DEFAULT_TIMEOUT,
         write_timeout: float = DEFAULT_WRITE_TIMEOUT,
+        save_csv: bool = False,
+        csv_folder: str = DEFAULT_LOG_DIR,
+        convert: Optional[bool] = None,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.write_timeout = write_timeout
+        self.save_csv = bool(save_csv if convert is None else convert)
+        self.csv_folder = csv_folder
         self.logger = logger or logging.getLogger(__name__)
         self.ser: Optional[serial.Serial] = None
 
@@ -446,7 +455,23 @@ class adc_controller:
             len(parsed_data),
         )
 
+        if self.save_csv:
+            csv_file = self.make_csv_output_file(output_file)
+            try:
+                row_count = write_legacy_payload_csv(parsed_data, csv_file)
+                self.logger.info(
+                    "ADC CSV saved: %s, rows=%d",
+                    csv_file,
+                    row_count,
+                )
+            except Exception as err:
+                self.logger.error("ADC CSV save failed: %r", err)
+
         return received_samples
+
+    def make_csv_output_file(self, output_file: str) -> str:
+        base_name = os.path.splitext(os.path.basename(output_file))[0]
+        return os.path.join(self.csv_folder, base_name + ".csv")
 
     # -------------------------------------------------------------------------
     # High-level capture sequence

@@ -2,19 +2,32 @@ from __future__ import annotations
 
 """Parsing helpers for 64-byte measurement blocks."""
 
+import csv
+import os
 import struct
 from dataclasses import dataclass
 from os import PathLike
 from typing import Iterator, Union
 
+ADS131A_SCALE_FACTOR = 4.0 / 0x800000
+ISOLATED_AMP_GAIN = 3.0
+VOLTAGE_GAIN = 50.0
+CURRENT_GAIN = 2.0
+
 LITTLE_ENDIAN = "<"
 ADC_ROWS = 3
 ADC_COLS = 4
 ADC_SAMPLE_COUNT = ADC_ROWS * ADC_COLS
+ADC_SENSOR_COUNT = 10
 MEASURE_BLOCK_FORMAT = f"{LITTLE_ENDIAN}hH{ADC_SAMPLE_COUNT}iI2I"
 MEASURE_BLOCK_SIZE = struct.calcsize(MEASURE_BLOCK_FORMAT)
 LEGACY_PAYLOAD_FORMAT = f"{LITTLE_ENDIAN}Hh{ADC_SAMPLE_COUNT}i"
 LEGACY_PAYLOAD_SIZE = struct.calcsize(LEGACY_PAYLOAD_FORMAT)
+LEGACY_CSV_HEADER = (
+    ["Time", "FB"]
+    + [f"ADC{index}" for index in range(ADC_SENSOR_COUNT)]
+    + ["Voltage", "Current"]
+)
 
 if MEASURE_BLOCK_SIZE != 64:
     raise RuntimeError(f"Unexpected measure block size: {MEASURE_BLOCK_SIZE}")
@@ -32,6 +45,16 @@ class MeasureData:
     adc_data: list[list[int]]
     seq_num: int
     padding: tuple[int, int]
+    raw: bytes
+
+
+@dataclass(frozen=True)
+class LegacyMeasureData:
+    """Parsed representation of the saved legacy ADC payload."""
+
+    time: int
+    bridge_state: int
+    values: list[int]
     raw: bytes
 
 
@@ -67,6 +90,23 @@ def parse_measure_block(raw: bytes) -> MeasureData:
     )
 
 
+def parse_legacy_payload_block(raw: bytes) -> LegacyMeasureData:
+    """Parse a single 52-byte legacy ADC payload block."""
+    if len(raw) != LEGACY_PAYLOAD_SIZE:
+        raise ValueError(
+            f"Legacy payload block must be exactly {LEGACY_PAYLOAD_SIZE} bytes, "
+            f"got {len(raw)}"
+        )
+
+    unpacked = struct.unpack(LEGACY_PAYLOAD_FORMAT, raw)
+    return LegacyMeasureData(
+        time=unpacked[0],
+        bridge_state=unpacked[1],
+        values=list(unpacked[2 : 2 + ADC_SAMPLE_COUNT]),
+        raw=bytes(raw),
+    )
+
+
 def parse_measure_stream(raw: bytes) -> list[MeasureData]:
     """Parse a byte stream containing an integral number of 64-byte blocks."""
     if len(raw) % MEASURE_BLOCK_SIZE != 0:
@@ -78,6 +118,20 @@ def parse_measure_stream(raw: bytes) -> list[MeasureData]:
     return [
         parse_measure_block(raw[offset : offset + MEASURE_BLOCK_SIZE])
         for offset in range(0, len(raw), MEASURE_BLOCK_SIZE)
+    ]
+
+
+def parse_legacy_payload_stream(raw: bytes) -> list[LegacyMeasureData]:
+    """Parse a byte stream containing an integral number of 52-byte payloads."""
+    if len(raw) % LEGACY_PAYLOAD_SIZE != 0:
+        raise ValueError(
+            "Legacy payload stream length must be a multiple of "
+            f"{LEGACY_PAYLOAD_SIZE}, got {len(raw)}"
+        )
+
+    return [
+        parse_legacy_payload_block(raw[offset : offset + LEGACY_PAYLOAD_SIZE])
+        for offset in range(0, len(raw), LEGACY_PAYLOAD_SIZE)
     ]
 
 
@@ -169,6 +223,53 @@ def convert_measure_stream_to_legacy_payload(raw: bytes) -> bytes:
         serialize_legacy_measure_block(block, corrected_adc_rows[index])
         for index, block in enumerate(blocks)
     )
+
+
+def scale_legacy_payload_values(values: list[int]) -> list[float]:
+    """Scale ADC payload values using the legacy realtime-save conversion."""
+    if len(values) != ADC_SAMPLE_COUNT:
+        raise ValueError(
+            f"ADC values must contain {ADC_SAMPLE_COUNT} values, got {len(values)}"
+        )
+
+    scaled = [
+        (ISOLATED_AMP_GAIN * ADS131A_SCALE_FACTOR) * value
+        for value in values
+    ]
+    scaled[ADC_SENSOR_COUNT] = scaled[ADC_SENSOR_COUNT] * VOLTAGE_GAIN
+    scaled[ADC_SENSOR_COUNT + 1] = (
+        scaled[ADC_SENSOR_COUNT + 1] * CURRENT_GAIN * 1000
+    )
+
+    return scaled
+
+
+def legacy_payload_to_csv_rows(raw: bytes) -> Iterator[list[Union[int, float]]]:
+    """Yield CSV rows for converted 52-byte ADC payload bytes."""
+    for block in parse_legacy_payload_stream(raw):
+        yield [
+            block.time,
+            block.bridge_state,
+            *scale_legacy_payload_values(block.values),
+        ]
+
+
+def write_legacy_payload_csv(raw: bytes, path: Union[str, PathLike]) -> int:
+    """Write converted ADC payload bytes to CSV and return the written row count."""
+    output_dir = os.path.dirname(os.path.abspath(path))
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
+    row_count = 0
+    with open(path, "w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(LEGACY_CSV_HEADER)
+
+        for row in legacy_payload_to_csv_rows(raw):
+            writer.writerow(row)
+            row_count += 1
+
+    return row_count
 
 
 def iter_measure_blocks_from_file(path: Union[str, PathLike]) -> Iterator[MeasureData]:
