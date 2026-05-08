@@ -754,31 +754,7 @@ class ERSMainApp:
         Stop blocking hardware operations without blocking the asyncio event loop.
         State changes and UDP messages stay on the event-loop thread.
         """
-        try:
-            if self.relay is not None:
-                await asyncio.to_thread(self.relay.clear)
-        except Exception as err:
-            self.console(f">> Relay clear failed during error stop: {repr(err)}", level="error")
-
-        try:
-            if self.power is not None:
-                await asyncio.to_thread(self.power.stop)
-        except Exception as err:
-            self.console(f">> Power stop failed during error stop: {repr(err)}", level="error")
-
-        try:
-            if self.gpio is not None:
-                self.gpio.disable_booster()
-        except Exception as err:
-            self.console(f">> Disable booster failed during error stop: {repr(err)}", level="error")
-
-        if job.get("DoADCTest", False):
-            try:
-                if self.gpio is not None:
-                    self.gpio.disable_test_mode()
-                    await asyncio.sleep(1.0)
-            except Exception as err:
-                self.console(f">> Disable test mode failed: {repr(err)}", level="error")
+        await self.safe_hardware_stop_async(job, "error")
 
         if self.fault_message == "CANCEL BY USER":
             self.job = None
@@ -804,23 +780,38 @@ class ERSMainApp:
         """
         Stop blocking hardware operations after a successful job without blocking UDP handling.
         """
+        await self.safe_hardware_stop_async(job, "normal")
+
+    async def safe_hardware_stop_async(self, job, stop_type):
+        """
+        Stop shared hardware resources without blocking the asyncio event loop.
+        """
         try:
             if self.relay is not None:
                 await asyncio.to_thread(self.relay.clear)
         except Exception as err:
-            self.console(f">> Relay clear failed during normal stop: {repr(err)}", level="error")
+            self.console(
+                f">> Relay clear failed during {stop_type} stop: {repr(err)}",
+                level="error",
+            )
 
         try:
             if self.power is not None:
                 await asyncio.to_thread(self.power.stop)
         except Exception as err:
-            self.console(f">> Power stop failed during normal stop: {repr(err)}", level="error")
+            self.console(
+                f">> Power stop failed during {stop_type} stop: {repr(err)}",
+                level="error",
+            )
 
         try:
             if self.gpio is not None:
                 self.gpio.disable_booster()
         except Exception as err:
-            self.console(f">> Disable booster failed during normal stop: {repr(err)}", level="error")
+            self.console(
+                f">> Disable booster failed during {stop_type} stop: {repr(err)}",
+                level="error",
+            )
 
         if job.get("DoADCTest", False):
             try:
