@@ -64,8 +64,8 @@ class power_controller:
     def set_init_values(self, values: Optional[dict] = None) -> bool:
         """
         Holding register 초기화.
-        values가 None이면 default 값 전체를 한 번에 쓴다.
-        values가 dict이면 default 값에 values를 반영한 뒤 전체를 한 번에 쓴다.
+        values가 None이면 생성자에서 받은 init_values를 사용한다.
+        최종 values는 모든 holding register 키를 포함해야 한다.
         """
 
         if values is None:
@@ -296,41 +296,50 @@ class power_controller:
         """
         Holding Register 전체를 한 번에 설정한다.
 
-        values가 None이면 modbus_master.py에 정의된 default 값을 사용한다.
-        values가 dict이면 default 값을 먼저 만들고,
-        values에 들어있는 항목만 덮어쓴 뒤 전체 register를 한 번에 write한다.
-
-        예:
-            ctrl.write_all_holding_registers({
-                "target_voltage": 30,
-                "target_load_current": 100,
-                "kp_cv": 0.01,
-                "ki_cv": 0.002,
-                "kp_cc": 0.5,
-                "ki_cc": 0.01,
-            })
+        values는 모든 holding register 키를 포함해야 한다.
+        modbus_master.py의 default 값과 섞지 않고 values만 사용한다.
         """
 
         try:
-            holding_words = modbus_master.get_default_holding_values()
+            self.logger.info("Requested holding register values: %s", values)
 
-            if values is not None:
-                for key, value in values.items():
-                    resolved_key = modbus_master.resolve_holding_key(key)
+            if values is None:
+                self.logger.error("Holding register values are required")
+                return False
 
-                    if resolved_key not in modbus_master.HOLDING_REGISTER_MAP:
-                        self.logger.error("Unknown holding register name: %s", key)
-                        return False
+            holding_words = [0] * modbus_master.HOLDING_REGISTER_WORD_COUNT
+            written_keys = set()
 
-                    definition = modbus_master.HOLDING_REGISTER_MAP[resolved_key]
-                    encoded_value = modbus_master.encode_register_value(
-                        definition,
-                        value,
-                    )
+            for key, value in values.items():
+                resolved_key = modbus_master.resolve_holding_key(key)
 
-                    holding_words[
-                        definition.offset:definition.end_offset
-                    ] = encoded_value
+                if resolved_key not in modbus_master.HOLDING_REGISTER_MAP:
+                    self.logger.error("Unknown holding register name: %s", key)
+                    return False
+
+                definition = modbus_master.HOLDING_REGISTER_MAP[resolved_key]
+                encoded_value = modbus_master.encode_register_value(
+                    definition,
+                    value,
+                )
+
+                holding_words[
+                    definition.offset:definition.end_offset
+                ] = encoded_value
+                written_keys.add(resolved_key)
+
+            missing_keys = [
+                register.key
+                for register in modbus_master.HOLDING_REGISTERS
+                if register.key not in written_keys
+            ]
+
+            if missing_keys:
+                self.logger.error(
+                    "Missing holding register values: %s",
+                    ", ".join(missing_keys),
+                )
+                return False
 
             self.logger.info("Writing all holding registers: %s", holding_words)
 
@@ -487,7 +496,11 @@ def main() -> None:
 
         if args.init_default:
             print("\n>> Writing default holding registers...")
-            if not ctrl.set_init_values(None):
+            default_values = {
+                register.key: register.default_value
+                for register in modbus_master.HOLDING_REGISTERS
+            }
+            if not ctrl.set_init_values(default_values):
                 print(">> Initialization failed")
                 return
 
