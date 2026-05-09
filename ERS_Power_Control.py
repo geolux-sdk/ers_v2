@@ -235,12 +235,16 @@ class power_controller:
 
             return False
 
-    def _read_holding_registers(self) -> dict:
+    def _read_holding_registers(self, info_message: Optional[str] = None) -> dict:
         try:
             results = self.service.read_holding_registers()
         except Exception as err:
             self.logger.exception("Error during _read_holding_registers: %r", err)
             raise
+
+        if info_message:
+            self.logger.info("%s: values=%s", info_message, results)
+            return results
 
         self.logger.debug("Read holding registers: %s", results)
         return results
@@ -301,8 +305,6 @@ class power_controller:
         """
 
         try:
-            self.logger.info("Requested holding register values: %s", values)
-
             if values is None:
                 self.logger.error("Holding register values are required")
                 return False
@@ -341,8 +343,6 @@ class power_controller:
                 )
                 return False
 
-            self.logger.info("Writing all holding registers: %s", holding_words)
-
             ok = self.service.write_holding_registers(
                 0,
                 holding_words,
@@ -354,10 +354,9 @@ class power_controller:
 
             time.sleep(0.05)
 
-            results = self._read_holding_registers()
-            self.logger.info("Holding registers after write_all: %s", results)
-
-            self.logger.info("All holding registers written successfully")
+            self._read_holding_registers(
+                info_message="All holding registers written successfully"
+            )
             return True
 
         except Exception as err:
