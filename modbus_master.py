@@ -203,7 +203,7 @@ HOLDING_REGISTERS = [
         title="Kp_cc",
         description="Kp gain in the inner CC loop",
         scale="float32",
-        default_value=0.5,
+        default_value=0.3,
         writable_while_running=False,
         data_type="float32",
     ),
