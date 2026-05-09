@@ -85,7 +85,7 @@ class mySettings:
                 "load_voltage_gain": 150,
                 "load_voltage_offset": 0,
                 "load_current_gain": 1300,
-                "load_current_offset": 20,
+                "load_current_offset": 6,
                 "overvoltage_threshold": 400,
                 "overcurrent_threshold": 2000,
                 "soft_start_rate": 5000,

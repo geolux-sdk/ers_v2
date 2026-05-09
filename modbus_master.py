@@ -133,7 +133,7 @@ HOLDING_REGISTERS = [
         title="Load Current Offset",
         description="ADC calibration offset for load current",
         scale="1 means 1 mV",
-        default_value=20,
+        default_value=6,
     ),
     RegisterDefinition(
         address=40010,
