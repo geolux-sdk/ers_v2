@@ -647,6 +647,7 @@ class ERSMainApp:
             try:
                 if self.gpio is not None:
                     self.gpio.enable_booster()
+                    await asyncio.sleep(1)
             except Exception as err:
                 self.fault_message = "BOOSTER ENABLE FAIL"
                 self.console(f">> {self.fault_message}: {repr(err)}", level="error")
