@@ -42,7 +42,7 @@ class relay_board_controller:
 
                 send_msg = self._make_sendmsg(data)
 
-                for i in range(3):
+                for i in range(5):
                     ser.reset_input_buffer()
                     ser.write(send_msg)
                     time.sleep(0.5)

@@ -133,7 +133,9 @@ class ERSMainApp:
         """
         try:
             if self.relay is not None:
-                self.relay.clear()
+                relay_clear_ok = self.relay.clear()
+                if not relay_clear_ok:
+                    self.console(">> Relay clear during close failed: no response", level="error")
         except Exception as err:
             self.console(f">> Relay clear during close failed: {repr(err)}", level="error")
 
@@ -701,6 +703,7 @@ class ERSMainApp:
                     file_name_base + "-" + f"{idx:03}" + ".dat",
                 )
 
+                relay_clear_failed = False
                 try:
                     def capture_adc():
                         with adc_controller(**adc_settings, logger=self.logger) as adc:
@@ -721,9 +724,19 @@ class ERSMainApp:
                 finally:
                     try:
                         if self.relay is not None:
-                            await asyncio.to_thread(self.relay.clear)
+                            relay_clear_ok = await asyncio.to_thread(self.relay.clear)
+                            if not relay_clear_ok:
+                                relay_clear_failed = True
+                                self.fault_message = "RELAY CLEAR FAIL"
+                                self.console(f">> {self.fault_message}", level="error")
                     except Exception as err:
+                        relay_clear_failed = True
+                        self.fault_message = "RELAY CLEAR EXCEPTION"
                         self.console(f">> Relay clear failed: {repr(err)}", level="error")
+
+                if relay_clear_failed:
+                    await self.safe_error_stop_async(job)
+                    break
 
                 try:
                     power_values = await asyncio.to_thread(self.power.monitoring_values)
@@ -789,7 +802,12 @@ class ERSMainApp:
         """
         try:
             if self.relay is not None:
-                await asyncio.to_thread(self.relay.clear)
+                relay_clear_ok = await asyncio.to_thread(self.relay.clear)
+                if not relay_clear_ok:
+                    self.console(
+                        f">> Relay clear failed during {stop_type} stop: no response",
+                        level="error",
+                    )
         except Exception as err:
             self.console(
                 f">> Relay clear failed during {stop_type} stop: {repr(err)}",
