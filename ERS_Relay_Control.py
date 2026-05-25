@@ -42,15 +42,14 @@ class relay_board_controller:
 
                 send_msg = self._make_sendmsg(data)
 
-                for i in range(5):
+                max_attempts = 5
+                for attempt in range(1, max_attempts + 1):
                     ser.reset_input_buffer()
                     ser.write(send_msg)
                     time.sleep(0.5)
 
-                    if self.__recv(ser):
+                    if self.__recv(ser, attempt, max_attempts):
                         return True
-                    
-                self.logger.error(f"relay receive error {i=}")
 
         except (OSError, serial.SerialException) as err:
             self.logger.error(f"{repr(err)}")
@@ -88,18 +87,26 @@ class relay_board_controller:
     def _format_packet(packet: bytes) -> str:
         return packet.hex(" ") if packet else "<empty>"
 
-    def __recv(self, ser) -> bool:
+    def _log_recv_failure(self, attempt, max_attempts, message, *args) -> None:
+        log_func = self.logger.error if attempt >= max_attempts else self.logger.warning
+        log_func("attempt=%d/%d " + message, attempt, max_attempts, *args)
+
+    def __recv(self, ser, attempt, max_attempts) -> bool:
         head_data = ser.read(3)  # 시리얼 포트로부터 데이터 수신
 
         if len(head_data) != 3:
-            self.logger.error(
+            self._log_recv_failure(
+                attempt,
+                max_attempts,
                 "recv header size error: expected=3 received=%d packet=%s",
                 len(head_data),
                 self._format_packet(head_data),
             )
             return False
         if head_data[0] != 0xFF:
-            self.logger.error(
+            self._log_recv_failure(
+                attempt,
+                max_attempts,
                 "invalid header: packet=%s",
                 self._format_packet(head_data),
             )
@@ -113,7 +120,9 @@ class relay_board_controller:
         packet = head_data + received_data
         
         if len(received_data) != packnum * 4:
-            self.logger.error(
+            self._log_recv_failure(
+                attempt,
+                max_attempts,
                 "recv data size mismatch: expected=%d received=%d packet=%s",
                 packnum * 4,
                 len(received_data),
@@ -125,7 +134,9 @@ class relay_board_controller:
         calc_checksum = (0 - (sum_data + 0xFF + packnum)) & 0xFF
 
         if checksum != calc_checksum:
-            self.logger.error(
+            self._log_recv_failure(
+                attempt,
+                max_attempts,
                 "checksum mismatch: received=0x%02X calculated=0x%02X packet=%s",
                 checksum,
                 calc_checksum,
@@ -134,7 +145,9 @@ class relay_board_controller:
             return False
 
         if packnum != 1:
-            self.logger.warning(
+            self._log_recv_failure(
+                attempt,
+                max_attempts,
                 "unexpected packnum=%d packet=%s",
                 packnum,
                 self._format_packet(packet),
