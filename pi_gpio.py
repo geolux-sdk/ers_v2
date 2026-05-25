@@ -91,10 +91,9 @@ class GPIOController:
         try:
             for pin in self.output_pins:
                 GPIO.output(pin, GPIO.LOW)
-            GPIO.cleanup()
-            self.logger.debug("GPIO cleanup done")
+            self.logger.debug("GPIO outputs reset to LOW")
         except Exception as e:
-            self.logger.error(f"Failed to cleanup GPIO: {e}")
+            self.logger.error(f"Failed to reset GPIO outputs: {e}")
 
     def __enter__(self):
         return self
