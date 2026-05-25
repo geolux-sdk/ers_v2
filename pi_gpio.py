@@ -111,7 +111,7 @@ if __name__ == "__main__":
         pin.enable_booster()
         pin.enable_relay_power()
         pin.enable_test_mode()
-        time.sleep(1)
+        time.sleep(100)
         pin.disable_test_mode()
         pin.disable_relay_power()
         pin.disable_booster()
