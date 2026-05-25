@@ -84,14 +84,25 @@ class relay_board_controller:
 
         return send_msg
 
+    @staticmethod
+    def _format_packet(packet: bytes) -> str:
+        return packet.hex(" ") if packet else "<empty>"
+
     def __recv(self, ser) -> bool:
         head_data = ser.read(3)  # 시리얼 포트로부터 데이터 수신
 
         if len(head_data) != 3:
-            self.logger.error("recv header size error")
+            self.logger.error(
+                "recv header size error: expected=3 received=%d packet=%s",
+                len(head_data),
+                self._format_packet(head_data),
+            )
             return False
         if head_data[0] != 0xFF:
-            self.logger.error("invalid header")
+            self.logger.error(
+                "invalid header: packet=%s",
+                self._format_packet(head_data),
+            )
             return False
         
 
@@ -99,20 +110,35 @@ class relay_board_controller:
         checksum = head_data[2]
 
         received_data = ser.read(packnum * 4)
+        packet = head_data + received_data
         
         if len(received_data) != packnum * 4:
-            self.logger.error("recv data size mismatch")
+            self.logger.error(
+                "recv data size mismatch: expected=%d received=%d packet=%s",
+                packnum * 4,
+                len(received_data),
+                self._format_packet(packet),
+            )
             return False
 
         sum_data = sum(received_data)
         calc_checksum = (0 - (sum_data + 0xFF + packnum)) & 0xFF
 
         if checksum != calc_checksum:
-            self.logger.error("checksum mismatch")
+            self.logger.error(
+                "checksum mismatch: received=0x%02X calculated=0x%02X packet=%s",
+                checksum,
+                calc_checksum,
+                self._format_packet(packet),
+            )
             return False
 
         if packnum != 1:
-            self.logger.warning("unexpected packnum=%d", packnum)
+            self.logger.warning(
+                "unexpected packnum=%d packet=%s",
+                packnum,
+                self._format_packet(packet),
+            )
             return False
 
         return True
