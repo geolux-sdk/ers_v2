@@ -47,6 +47,8 @@ BYTES_PER_SAMPLE = 64
 
 DEFAULT_READ_CHUNK_SAMPLES = 200
 
+DEFAULT_SAMPLE_RATE_HZ = 2400.0
+
 DEFAULT_BUSY_TIMEOUT_SEC = 10.0
 DEFAULT_BUSY_POLL_INTERVAL_SEC = 1.0
 DEFAULT_SETUP_RETRY_ATTEMPTS = 5
@@ -528,6 +530,7 @@ class adc_controller:
         read_chunk_samples: int = DEFAULT_READ_CHUNK_SAMPLES,
         busy_timeout_sec: float = DEFAULT_BUSY_TIMEOUT_SEC,
         busy_poll_interval_sec: float = DEFAULT_BUSY_POLL_INTERVAL_SEC,
+        sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
     ) -> int:
         """
         전체 측정 순서 실행.
@@ -550,14 +553,21 @@ class adc_controller:
             실제 수신 sample 수
         """
         expected_samples = 4 * cycles * (on_samples + off_samples)
+        sample_rate_hz = float(sample_rate_hz)
+        if sample_rate_hz <= 0:
+            raise ValueError("sample_rate_hz must be greater than 0")
+
+        expected_measurement_sec = expected_samples / sample_rate_hz
 
         self.logger.info(
-            "Capture configuration: pattern=%d, on=%d, off=%d, cycles=%d, expected_samples=%d",
+            "Capture configuration: pattern=%d, on=%d, off=%d, cycles=%d, expected_samples=%d, sample_rate=%.2f Hz, expected_measurement=%.3f sec",
             pattern,
             on_samples,
             off_samples,
             cycles,
             expected_samples,
+            sample_rate_hz,
+            expected_measurement_sec,
         )
 
         # PC 테스트 코드처럼 명령 시작 전 입력 버퍼를 비운다.
@@ -573,6 +583,12 @@ class adc_controller:
         self.start_measurement()
 
         self.logger.info("Waiting until ADC measurement is not BUSY...")
+        if expected_measurement_sec > 0:
+            self.logger.info(
+                "Sleeping for expected ADC measurement time: %.3f sec",
+                expected_measurement_sec,
+            )
+            time.sleep(expected_measurement_sec)
 
         state = self.wait_until_not_busy(
             timeout_sec=busy_timeout_sec,
@@ -691,6 +707,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--sample-rate",
+        type=float,
+        default=DEFAULT_SAMPLE_RATE_HZ,
+        help="ADC sample rate in Hz. Default: %(default)s",
+    )
+
+    parser.add_argument(
         "--output",
         default=None,
         help="Output binary file path. Default: ./log/adc_YYMMDD_HHMMSS.bin",
@@ -765,6 +788,9 @@ def main() -> int:
 
     output_file = args.output or make_default_output_file()
 
+    if args.sample_rate <= 0:
+        parser.error("--sample-rate must be greater than 0")
+
     ctrl = adc_controller(
         port=args.port,
         baudrate=args.baudrate,
@@ -800,6 +826,7 @@ def main() -> int:
 
             expected_samples = 4 * args.cycles * (args.on_samples + args.off_samples)
             expected_bytes = expected_samples * BYTES_PER_SAMPLE
+            expected_measurement_sec = expected_samples / args.sample_rate
 
             print("--------------------------------------------------")
             print("ERS ADC Capture")
@@ -810,8 +837,10 @@ def main() -> int:
             print("ON samples         :", args.on_samples)
             print("OFF samples        :", args.off_samples)
             print("Cycles             :", args.cycles)
+            print("Sample rate        :", args.sample_rate, "Hz")
             print("Expected samples   :", expected_samples)
             print("Expected bytes     :", expected_bytes)
+            print("Expected duration  :", "%.3f sec" % expected_measurement_sec)
             print("Output file        :", output_file)
             print("Busy timeout       :", args.busy_timeout, "sec")
             print("Busy poll interval :", args.busy_poll_interval, "sec")
@@ -827,6 +856,7 @@ def main() -> int:
                 read_chunk_samples=args.read_chunk_samples,
                 busy_timeout_sec=args.busy_timeout,
                 busy_poll_interval_sec=args.busy_poll_interval,
+                sample_rate_hz=args.sample_rate,
             )
 
             print("--------------------------------------------------")

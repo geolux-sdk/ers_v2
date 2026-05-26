@@ -595,6 +595,7 @@ class ERSMainApp:
             adc_param["on_samples"] = int(job["OnTime"] * spms)
             adc_param["off_samples"] = int(job["OffTime"] * spms)
             adc_param["cycles"] = job["NoStack"]
+            adc_param["sample_rate_hz"] = sample_rate
 
             expected_adc_samples = (
                 4
