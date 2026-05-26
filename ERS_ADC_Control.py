@@ -49,6 +49,8 @@ DEFAULT_READ_CHUNK_SAMPLES = 200
 
 DEFAULT_BUSY_TIMEOUT_SEC = 10.0
 DEFAULT_BUSY_POLL_INTERVAL_SEC = 1.0
+DEFAULT_SETUP_RETRY_ATTEMPTS = 5
+DEFAULT_SETUP_RETRY_DELAY_SEC = 0.2
 
 if MEASURE_BLOCK_SIZE != BYTES_PER_SAMPLE:
     raise RuntimeError(
@@ -92,6 +94,8 @@ class adc_controller:
         save_csv: bool = False,
         csv_folder: str = DEFAULT_LOG_DIR,
         convert: Optional[bool] = None,
+        setup_retry_attempts: int = DEFAULT_SETUP_RETRY_ATTEMPTS,
+        setup_retry_delay_sec: float = DEFAULT_SETUP_RETRY_DELAY_SEC,
         logger: Optional[logging.Logger] = None,
     ) -> None:
         self.port = port
@@ -100,6 +104,8 @@ class adc_controller:
         self.write_timeout = write_timeout
         self.save_csv = bool(save_csv if convert is None else convert)
         self.csv_folder = csv_folder
+        self.setup_retry_attempts = max(1, int(setup_retry_attempts))
+        self.setup_retry_delay_sec = max(0.0, float(setup_retry_delay_sec))
         self.logger = logger or logging.getLogger(__name__)
         self.ser: Optional[serial.Serial] = None
 
@@ -241,7 +247,41 @@ class adc_controller:
             total_cycles=cycles,
         )
 
-        self.send_command_expect_ok(packet, "SETUP")
+        last_err: Optional[Exception] = None
+
+        for attempt in range(1, self.setup_retry_attempts + 1):
+            if attempt > 1:
+                time.sleep(self.setup_retry_delay_sec)
+                self.reset_input_buffer()
+
+            try:
+                self.send_command_expect_ok(packet, "SETUP")
+                if attempt > 1:
+                    self.logger.info(
+                        "SETUP succeeded after retry: attempt=%d/%d",
+                        attempt,
+                        self.setup_retry_attempts,
+                    )
+                return
+            except Exception as err:
+                last_err = err
+                if attempt >= self.setup_retry_attempts:
+                    break
+                self.logger.warning(
+                    "SETUP failed: attempt=%d/%d err=%r",
+                    attempt,
+                    self.setup_retry_attempts,
+                    err,
+                )
+
+        self.logger.error(
+            "SETUP failed after %d attempts: %r",
+            self.setup_retry_attempts,
+            last_err,
+        )
+        if last_err is not None:
+            raise last_err
+        raise RuntimeError("SETUP failed without an exception")
 
     def query_state(self) -> ResponseCode:
         packet = build_query_state_command()
