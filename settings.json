@@ -50,7 +50,7 @@
         "baudrate": 115200,
         "sample_rate": 2400,
         "busy_poll_interval_sec": 1.0,
-        "save_csv": true,
+        "save_csv": false,
         "csv_folder": "./log"
     },
     "udp": {
