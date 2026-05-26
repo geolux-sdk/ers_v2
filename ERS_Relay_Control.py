@@ -42,11 +42,11 @@ class relay_board_controller:
 
                 send_msg = self._make_sendmsg(data)
 
-                max_attempts = 5
+                max_attempts = 10
                 for attempt in range(1, max_attempts + 1):
                     ser.reset_input_buffer()
                     ser.write(send_msg)
-                    time.sleep(0.5)
+                    time.sleep(1.0)
 
                     if self.__recv(ser, attempt, max_attempts):
                         return True
