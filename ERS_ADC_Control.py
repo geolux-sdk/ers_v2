@@ -46,6 +46,10 @@ DEFAULT_LOG_DIR = "./log"
 BYTES_PER_SAMPLE = 64
 
 DEFAULT_READ_CHUNK_SAMPLES = 200
+DEFAULT_READ_EMPTY_RETRY_LIMIT = 5
+DEFAULT_RANGE_READ_CHUNK_SAMPLES = 64
+DEFAULT_RANGE_READ_RETRY_ATTEMPTS = 5
+DEFAULT_RANGE_READ_RETRY_DELAY_SEC = 0.05
 
 DEFAULT_SAMPLE_RATE_HZ = 2400.0
 
@@ -136,6 +140,15 @@ class adc_controller:
         if self.ser is not None:
             try:
                 if self.ser.is_open:
+                    try:
+                        self.ser.dtr = False
+                        self.logger.info("Serial DTR set LOW: %s", self.port)
+                    except Exception as err:
+                        self.logger.warning(
+                            "Failed to set Serial DTR LOW before close %s: %r",
+                            self.port,
+                            err,
+                        )
                     self.ser.close()
                     self.logger.info("Serial closed: %s", self.port)
             finally:
@@ -326,6 +339,17 @@ class adc_controller:
         packet = build_start_transmission_range_command(starting_seq, count)
         self.send_command_expect_ok(packet, "START_TRANSMISSION_RANGE")
 
+    def start_transmission_range_no_response(self, starting_seq: int, count: int) -> None:
+        """
+        Range transmission without reading a response byte.
+
+        On a valid Command 4 range request, firmware streams binary data
+        immediately. Reading a response byte here would consume the first byte
+        of the ADC data stream.
+        """
+        packet = build_start_transmission_range_command(starting_seq, count)
+        self.send_command_no_response(packet, "START_TRANSMISSION_RANGE")
+
     def abort_transmission(self) -> None:
         packet = build_abort_transmission_command()
         self.send_command_expect_ok(packet, "ABORT_TRANSMISSION")
@@ -384,6 +408,7 @@ class adc_controller:
         output_file: str,
         expected_samples: int,
         read_chunk_samples: int = DEFAULT_READ_CHUNK_SAMPLES,
+        read_empty_retry_limit: int = DEFAULT_READ_EMPTY_RETRY_LIMIT,
     ) -> int:
         """
         ADC binary data를 파일에 저장한다.
@@ -412,6 +437,9 @@ class adc_controller:
         if read_chunk_samples <= 0:
             raise ValueError("read_chunk_samples must be greater than 0")
 
+        if read_empty_retry_limit < 0:
+            raise ValueError("read_empty_retry_limit must be >= 0")
+
         expected_bytes = expected_samples * BYTES_PER_SAMPLE
         read_chunk_bytes = read_chunk_samples * BYTES_PER_SAMPLE
 
@@ -430,6 +458,7 @@ class adc_controller:
         )
 
         raw_data = bytearray()
+        empty_read_count = 0
 
         while received_bytes < expected_bytes:
             remain_bytes = expected_bytes - received_bytes
@@ -438,12 +467,19 @@ class adc_controller:
             data = ser.read(request_bytes)
 
             if data == b"":
+                empty_read_count += 1
                 self.logger.warning(
-                    "Serial read timeout: received_bytes=%d / %d",
+                    "Serial read timeout: received_bytes=%d / %d, retry=%d/%d",
                     received_bytes,
                     expected_bytes,
+                    empty_read_count,
+                    read_empty_retry_limit,
                 )
-                break
+                if empty_read_count >= read_empty_retry_limit:
+                    break
+                continue
+
+            empty_read_count = 0
 
             raw_data.extend(data)
             received_bytes += len(data)
@@ -511,6 +547,348 @@ class adc_controller:
 
         return received_samples
 
+    def _read_serial_exact_bytes(
+        self,
+        expected_bytes: int,
+        read_empty_retry_limit: int,
+        context: str,
+        max_read_bytes: Optional[int] = None,
+    ) -> bytes:
+        ser = self._require_serial()
+
+        if expected_bytes <= 0:
+            raise ValueError("expected_bytes must be greater than 0")
+
+        if read_empty_retry_limit < 0:
+            raise ValueError("read_empty_retry_limit must be >= 0")
+
+        if max_read_bytes is not None and max_read_bytes <= 0:
+            raise ValueError("max_read_bytes must be greater than 0")
+
+        data_buffer = bytearray()
+        empty_read_count = 0
+
+        while len(data_buffer) < expected_bytes:
+            remain_bytes = expected_bytes - len(data_buffer)
+            request_bytes = (
+                min(max_read_bytes, remain_bytes)
+                if max_read_bytes is not None
+                else remain_bytes
+            )
+            data = ser.read(request_bytes)
+
+            if data == b"":
+                empty_read_count += 1
+                self.logger.warning(
+                    "%s serial read timeout: received_bytes=%d / %d, retry=%d/%d",
+                    context,
+                    len(data_buffer),
+                    expected_bytes,
+                    empty_read_count,
+                    read_empty_retry_limit,
+                )
+                if empty_read_count >= read_empty_retry_limit:
+                    break
+                continue
+
+            empty_read_count = 0
+            data_buffer.extend(data)
+
+        return bytes(data_buffer)
+
+    def _prepare_range_retry(self, retry_delay_sec: float) -> None:
+        try:
+            self.reset_input_buffer()
+        except Exception as err:
+            self.logger.warning("ADC range retry input buffer reset failed: %r", err)
+
+        try:
+            self.abort_transmission()
+        except Exception as err:
+            self.logger.warning(
+                "ADC range retry ABORT_TRANSMISSION failed or was not needed: %r",
+                err,
+            )
+
+        try:
+            self.reset_input_buffer()
+        except Exception as err:
+            self.logger.warning("ADC range retry input buffer reset failed: %r", err)
+
+        if retry_delay_sec > 0:
+            time.sleep(retry_delay_sec)
+
+    def _save_raw_measure_data(
+        self,
+        output_file: str,
+        raw_data: bytes,
+        csv_output_file: Optional[str] = None,
+    ) -> int:
+        output_dir = os.path.dirname(os.path.abspath(output_file))
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
+        received_bytes = len(raw_data)
+        received_samples = received_bytes // BYTES_PER_SAMPLE
+        remain_partial_bytes = received_bytes % BYTES_PER_SAMPLE
+
+        if remain_partial_bytes != 0:
+            raise RuntimeError(
+                "ADC data has partial sample bytes: "
+                f"received_bytes={received_bytes}, "
+                f"partial_bytes={remain_partial_bytes}, "
+                f"output_file={output_file}"
+            )
+
+        parsed_data = parse(raw_data)
+
+        with open(output_file, "wb") as f:
+            f.write(parsed_data)
+
+        self.logger.info(
+            "ADC data saved: %s, parsed_bytes=%d",
+            output_file,
+            len(parsed_data),
+        )
+
+        if csv_output_file is not None:
+            row_count = write_legacy_payload_csv(parsed_data, csv_output_file)
+            self.logger.info(
+                "ADC CSV saved: %s, rows=%d",
+                csv_output_file,
+                row_count,
+            )
+        elif self.save_csv:
+            csv_file = self.make_csv_output_file(output_file)
+            try:
+                row_count = write_legacy_payload_csv(parsed_data, csv_file)
+                self.logger.info(
+                    "ADC CSV saved: %s, rows=%d",
+                    csv_file,
+                    row_count,
+                )
+            except Exception as err:
+                self.logger.error("ADC CSV save failed: %r", err)
+
+        return received_samples
+
+    def save_raw_measure_data(
+        self,
+        output_file: str,
+        raw_data: bytes,
+        csv_output_file: Optional[str] = None,
+    ) -> int:
+        return self._save_raw_measure_data(
+            output_file=output_file,
+            raw_data=raw_data,
+            csv_output_file=csv_output_file,
+        )
+
+    def read_all_data(
+        self,
+        expected_samples: int,
+        read_chunk_samples: int = DEFAULT_READ_CHUNK_SAMPLES,
+        read_empty_retry_limit: int = DEFAULT_READ_EMPTY_RETRY_LIMIT,
+    ) -> bytes:
+        if expected_samples <= 0:
+            raise ValueError("expected_samples must be greater than 0")
+
+        if read_chunk_samples <= 0:
+            raise ValueError("read_chunk_samples must be greater than 0")
+
+        expected_bytes = expected_samples * BYTES_PER_SAMPLE
+        read_chunk_bytes = read_chunk_samples * BYTES_PER_SAMPLE
+        start_time = time.time()
+
+        self.logger.info(
+            "Start receiving ADC data by all: expected_samples=%d, expected_bytes=%d",
+            expected_samples,
+            expected_bytes,
+        )
+
+        self.reset_input_buffer()
+        self.start_transmission_all_no_response()
+
+        raw_data = self._read_serial_exact_bytes(
+            expected_bytes=expected_bytes,
+            read_empty_retry_limit=read_empty_retry_limit,
+            context="all",
+            max_read_bytes=read_chunk_bytes,
+        )
+
+        elapsed = time.time() - start_time
+        received_bytes = len(raw_data)
+        received_samples = received_bytes // BYTES_PER_SAMPLE
+
+        self.logger.info(
+            "ADC all data received: received_samples=%d, received_bytes=%d, elapsed=%.2f sec",
+            received_samples,
+            received_bytes,
+            elapsed,
+        )
+
+        if received_bytes != expected_bytes:
+            missing_bytes = expected_bytes - received_bytes
+            message = (
+                "ADC all data size mismatch: "
+                f"expected={expected_bytes} bytes, "
+                f"received={received_bytes} bytes, "
+                f"missing={missing_bytes} bytes"
+            )
+            self.logger.error(message)
+            raise RuntimeError(message)
+
+        return raw_data
+
+    def read_range_data(
+        self,
+        expected_samples: int,
+        range_chunk_samples: int = DEFAULT_RANGE_READ_CHUNK_SAMPLES,
+        range_retry_attempts: int = DEFAULT_RANGE_READ_RETRY_ATTEMPTS,
+        read_empty_retry_limit: int = DEFAULT_READ_EMPTY_RETRY_LIMIT,
+        retry_delay_sec: float = DEFAULT_RANGE_READ_RETRY_DELAY_SEC,
+    ) -> bytes:
+        if expected_samples <= 0:
+            raise ValueError("expected_samples must be greater than 0")
+
+        if range_chunk_samples <= 0:
+            raise ValueError("range_chunk_samples must be greater than 0")
+
+        if range_retry_attempts < 1:
+            raise ValueError("range_retry_attempts must be >= 1")
+
+        if read_empty_retry_limit < 0:
+            raise ValueError("read_empty_retry_limit must be >= 0")
+
+        if retry_delay_sec < 0:
+            raise ValueError("retry_delay_sec must be >= 0")
+
+        expected_bytes = expected_samples * BYTES_PER_SAMPLE
+        raw_data = bytearray()
+        start_time = time.time()
+        next_seq = 0
+
+        self.logger.info(
+            "Start receiving ADC data by range: expected_samples=%d, "
+            "expected_bytes=%d, range_chunk_samples=%d, retry_attempts=%d",
+            expected_samples,
+            expected_bytes,
+            range_chunk_samples,
+            range_retry_attempts,
+        )
+
+        while next_seq < expected_samples:
+            chunk_samples = min(range_chunk_samples, expected_samples - next_seq)
+            chunk_bytes = chunk_samples * BYTES_PER_SAMPLE
+            chunk_data: Optional[bytes] = None
+            last_received_bytes = 0
+
+            for attempt in range(1, range_retry_attempts + 1):
+                self.reset_input_buffer()
+                self.logger.info(
+                    "START_TRANSMISSION_RANGE seq=%d count=%d attempt=%d/%d",
+                    next_seq,
+                    chunk_samples,
+                    attempt,
+                    range_retry_attempts,
+                )
+                self.start_transmission_range_no_response(
+                    starting_seq=next_seq,
+                    count=chunk_samples,
+                )
+
+                data = self._read_serial_exact_bytes(
+                    expected_bytes=chunk_bytes,
+                    read_empty_retry_limit=read_empty_retry_limit,
+                    context=(
+                        "range seq=%d count=%d attempt=%d/%d"
+                        % (next_seq, chunk_samples, attempt, range_retry_attempts)
+                    ),
+                )
+                last_received_bytes = len(data)
+
+                if last_received_bytes == chunk_bytes:
+                    chunk_data = data
+                    break
+
+                missing_bytes = chunk_bytes - last_received_bytes
+                self.logger.warning(
+                    "ADC range data size mismatch: seq=%d count=%d "
+                    "expected=%d received=%d missing=%d attempt=%d/%d",
+                    next_seq,
+                    chunk_samples,
+                    chunk_bytes,
+                    last_received_bytes,
+                    missing_bytes,
+                    attempt,
+                    range_retry_attempts,
+                )
+
+                if attempt < range_retry_attempts:
+                    self._prepare_range_retry(retry_delay_sec)
+
+            if chunk_data is None:
+                missing_bytes = chunk_bytes - last_received_bytes
+                message = (
+                    "ADC range data size mismatch: "
+                    f"seq={next_seq}, "
+                    f"count={chunk_samples}, "
+                    f"expected={chunk_bytes} bytes, "
+                    f"received={last_received_bytes} bytes, "
+                    f"missing={missing_bytes} bytes, "
+                    f"attempts={range_retry_attempts}"
+                )
+                self.logger.error(message)
+                raise RuntimeError(message)
+
+            raw_data.extend(chunk_data)
+            next_seq += chunk_samples
+
+            self.logger.info(
+                "ADC range received: samples=%d / %d, bytes=%d / %d",
+                next_seq,
+                expected_samples,
+                len(raw_data),
+                expected_bytes,
+            )
+
+        elapsed = time.time() - start_time
+        self.logger.info(
+            "ADC range data received: received_samples=%d, received_bytes=%d, elapsed=%.2f sec",
+            len(raw_data) // BYTES_PER_SAMPLE,
+            len(raw_data),
+            elapsed,
+        )
+
+        return bytes(raw_data)
+
+    def read_range_to_file(
+        self,
+        output_file: str,
+        expected_samples: int,
+        range_chunk_samples: int = DEFAULT_RANGE_READ_CHUNK_SAMPLES,
+        range_retry_attempts: int = DEFAULT_RANGE_READ_RETRY_ATTEMPTS,
+        read_empty_retry_limit: int = DEFAULT_READ_EMPTY_RETRY_LIMIT,
+        retry_delay_sec: float = DEFAULT_RANGE_READ_RETRY_DELAY_SEC,
+        csv_output_file: Optional[str] = None,
+    ) -> int:
+        try:
+            raw_data = self.read_range_data(
+                expected_samples=expected_samples,
+                range_chunk_samples=range_chunk_samples,
+                range_retry_attempts=range_retry_attempts,
+                read_empty_retry_limit=read_empty_retry_limit,
+                retry_delay_sec=retry_delay_sec,
+            )
+        except RuntimeError as err:
+            raise RuntimeError("%s, output_file=%s" % (err, output_file)) from err
+
+        return self._save_raw_measure_data(
+            output_file=output_file,
+            raw_data=raw_data,
+            csv_output_file=csv_output_file,
+        )
+
     def make_csv_output_file(self, output_file: str) -> str:
         base_name = os.path.splitext(os.path.basename(output_file))[0]
         return os.path.join(self.csv_folder, base_name + ".csv")
@@ -528,6 +906,10 @@ class adc_controller:
         cycles: int = 1,
         start_transmission: bool = True,
         read_chunk_samples: int = DEFAULT_READ_CHUNK_SAMPLES,
+        read_empty_retry_limit: int = DEFAULT_READ_EMPTY_RETRY_LIMIT,
+        range_chunk_samples: int = DEFAULT_RANGE_READ_CHUNK_SAMPLES,
+        range_retry_attempts: int = DEFAULT_RANGE_READ_RETRY_ATTEMPTS,
+        range_retry_delay_sec: float = DEFAULT_RANGE_READ_RETRY_DELAY_SEC,
         busy_timeout_sec: float = DEFAULT_BUSY_TIMEOUT_SEC,
         busy_poll_interval_sec: float = DEFAULT_BUSY_POLL_INTERVAL_SEC,
         sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
@@ -606,16 +988,23 @@ class adc_controller:
             # 이전 QUERY_STATE 응답 잔여물이 있을 가능성을 제거한다.
             self.reset_input_buffer()
 
-            # 중요:
-            # START_TRANSMISSION_ALL 후에는 response 1 byte를 읽지 않는다.
-            # 바로 ADC binary data가 시작된다.
-            self.start_transmission_all_no_response()
-
-        received_samples = self.read_exact_to_file(
-            output_file=output_file,
-            expected_samples=expected_samples,
-            read_chunk_samples=read_chunk_samples,
-        )
+            # Range transmission streams binary data without an OK response.
+            # If one chunk is short, only that range is requested again.
+            received_samples = self.read_range_to_file(
+                output_file=output_file,
+                expected_samples=expected_samples,
+                range_chunk_samples=range_chunk_samples,
+                range_retry_attempts=range_retry_attempts,
+                read_empty_retry_limit=read_empty_retry_limit,
+                retry_delay_sec=range_retry_delay_sec,
+            )
+        else:
+            received_samples = self.read_exact_to_file(
+                output_file=output_file,
+                expected_samples=expected_samples,
+                read_chunk_samples=read_chunk_samples,
+                read_empty_retry_limit=read_empty_retry_limit,
+            )
 
         return received_samples
 
@@ -727,6 +1116,27 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--read-empty-retry-limit",
+        type=int,
+        default=DEFAULT_READ_EMPTY_RETRY_LIMIT,
+        help="Consecutive empty serial reads allowed before failing. Default: %(default)s",
+    )
+
+    parser.add_argument(
+        "--range-chunk-samples",
+        type=int,
+        default=DEFAULT_RANGE_READ_CHUNK_SAMPLES,
+        help="START_TRANSMISSION_RANGE chunk size in samples. Default: %(default)s",
+    )
+
+    parser.add_argument(
+        "--range-retry-attempts",
+        type=int,
+        default=DEFAULT_RANGE_READ_RETRY_ATTEMPTS,
+        help="Retry attempts per ranged data chunk. Default: %(default)s",
+    )
+
+    parser.add_argument(
         "--busy-timeout",
         type=float,
         default=DEFAULT_BUSY_TIMEOUT_SEC,
@@ -791,6 +1201,15 @@ def main() -> int:
     if args.sample_rate <= 0:
         parser.error("--sample-rate must be greater than 0")
 
+    if args.read_empty_retry_limit < 0:
+        parser.error("--read-empty-retry-limit must be >= 0")
+
+    if args.range_chunk_samples <= 0:
+        parser.error("--range-chunk-samples must be > 0")
+
+    if args.range_retry_attempts < 1:
+        parser.error("--range-retry-attempts must be >= 1")
+
     ctrl = adc_controller(
         port=args.port,
         baudrate=args.baudrate,
@@ -844,6 +1263,8 @@ def main() -> int:
             print("Output file        :", output_file)
             print("Busy timeout       :", args.busy_timeout, "sec")
             print("Busy poll interval :", args.busy_poll_interval, "sec")
+            print("Range chunk samples:", args.range_chunk_samples)
+            print("Range retries      :", args.range_retry_attempts)
             print("--------------------------------------------------")
 
             received_samples = ctrl.capture(
@@ -854,6 +1275,9 @@ def main() -> int:
                 cycles=args.cycles,
                 start_transmission=True,
                 read_chunk_samples=args.read_chunk_samples,
+                read_empty_retry_limit=args.read_empty_retry_limit,
+                range_chunk_samples=args.range_chunk_samples,
+                range_retry_attempts=args.range_retry_attempts,
                 busy_timeout_sec=args.busy_timeout,
                 busy_poll_interval_sec=args.busy_poll_interval,
                 sample_rate_hz=args.sample_rate,

@@ -9,10 +9,15 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from ERS_ADC_Control import (
+    BYTES_PER_SAMPLE,
     DEFAULT_BAUDRATE,
     DEFAULT_BUSY_POLL_INTERVAL_SEC,
     DEFAULT_BUSY_TIMEOUT_SEC,
     DEFAULT_PORT,
+    DEFAULT_RANGE_READ_CHUNK_SAMPLES,
+    DEFAULT_RANGE_READ_RETRY_ATTEMPTS,
+    DEFAULT_READ_CHUNK_SAMPLES,
+    DEFAULT_READ_EMPTY_RETRY_LIMIT,
     DEFAULT_TIMEOUT,
     DEFAULT_WRITE_TIMEOUT,
     adc_controller,
@@ -60,7 +65,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "ADC serial communication test. Repeats CONNECT, SETUP, START, "
-            "and STATUS polling without reading ADC sample data."
+            "STATUS polling, and optionally ranged ADC data retrieval."
         )
     )
 
@@ -108,6 +113,69 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--on-samples", type=int, default=480, help="SETUP ON samples")
     parser.add_argument("--off-samples", type=int, default=48, help="SETUP OFF samples")
     parser.add_argument("--cycles", type=int, default=1, help="SETUP cycle count")
+    parser.add_argument(
+        "--read-data",
+        action="store_true",
+        help="Read ADC data with START_TRANSMISSION_RANGE after STATUS OK",
+    )
+    parser.add_argument(
+        "--compare-all-range",
+        action="store_true",
+        help="Read the same measurement with ALL and RANGE, then compare raw bytes",
+    )
+    parser.add_argument(
+        "--force-close-range-at-sample",
+        type=int,
+        default=None,
+        help=(
+            "Fault injection: close the serial port after sending the RANGE "
+            "chunk that contains this sample index"
+        ),
+    )
+    parser.add_argument(
+        "--output",
+        default="test.dat",
+        help="RANGE output binary file path. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--csv-output",
+        default="test.csv",
+        help="RANGE output CSV file path. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--all-output",
+        default="test_all.dat",
+        help="ALL output binary file path used with --compare-all-range. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--all-csv-output",
+        default="test_all.csv",
+        help="ALL output CSV file path used with --compare-all-range. Default: %(default)s",
+    )
+    parser.add_argument(
+        "--read-chunk-samples",
+        type=int,
+        default=DEFAULT_READ_CHUNK_SAMPLES,
+        help="Serial read chunk size in samples for ALL mode",
+    )
+    parser.add_argument(
+        "--range-chunk-samples",
+        type=int,
+        default=DEFAULT_RANGE_READ_CHUNK_SAMPLES,
+        help="START_TRANSMISSION_RANGE chunk size in samples",
+    )
+    parser.add_argument(
+        "--range-retry-attempts",
+        type=int,
+        default=DEFAULT_RANGE_READ_RETRY_ATTEMPTS,
+        help="Retry attempts per ranged data chunk",
+    )
+    parser.add_argument(
+        "--read-empty-retry-limit",
+        type=int,
+        default=DEFAULT_READ_EMPTY_RETRY_LIMIT,
+        help="Consecutive empty serial reads allowed before a chunk attempt fails",
+    )
     parser.add_argument(
         "--setup-retries",
         type=int,
@@ -176,6 +244,19 @@ def make_controller(args: argparse.Namespace, logger: logging.Logger) -> adc_con
     )
 
 
+def expected_sample_count(args: argparse.Namespace) -> int:
+    return 4 * args.cycles * (args.on_samples + args.off_samples)
+
+
+def first_mismatch_index(left: bytes, right: bytes) -> int:
+    for index, (left_byte, right_byte) in enumerate(zip(left, right)):
+        if left_byte != right_byte:
+            return index
+    if len(left) != len(right):
+        return min(len(left), len(right))
+    return -1
+
+
 def wait_status(
     ctrl: adc_controller,
     args: argparse.Namespace,
@@ -206,6 +287,202 @@ def wait_status(
             )
 
         time.sleep(args.status_interval)
+
+
+def read_range_test_data(
+    ctrl: adc_controller,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+    loop_index: int,
+    expected_samples: int,
+) -> None:
+    logger.info(
+        "loop=%d READ_DATA expected_samples=%d range_chunk_samples=%d "
+        "range_retry_attempts=%d output=%s csv=%s",
+        loop_index,
+        expected_samples,
+        args.range_chunk_samples,
+        args.range_retry_attempts,
+        args.output,
+        args.csv_output,
+    )
+    ctrl.reset_input_buffer()
+    received_samples = ctrl.read_range_to_file(
+        output_file=args.output,
+        expected_samples=expected_samples,
+        range_chunk_samples=args.range_chunk_samples,
+        range_retry_attempts=args.range_retry_attempts,
+        read_empty_retry_limit=args.read_empty_retry_limit,
+        csv_output_file=args.csv_output,
+    )
+    if received_samples != expected_samples:
+        raise RuntimeError(
+            "ADC data sample count mismatch: expected=%d received=%d"
+            % (expected_samples, received_samples)
+        )
+    logger.info(
+        "loop=%d DATA_PASS received_samples=%d output=%s csv=%s",
+        loop_index,
+        received_samples,
+        args.output,
+        args.csv_output,
+    )
+
+
+def compare_all_range_data(
+    ctrl: adc_controller,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+    loop_index: int,
+    expected_samples: int,
+) -> None:
+    logger.info(
+        "loop=%d COMPARE_ALL_RANGE expected_samples=%d all_output=%s "
+        "range_output=%s range_chunk_samples=%d",
+        loop_index,
+        expected_samples,
+        args.all_output,
+        args.output,
+        args.range_chunk_samples,
+    )
+
+    all_raw = ctrl.read_all_data(
+        expected_samples=expected_samples,
+        read_chunk_samples=args.read_chunk_samples,
+        read_empty_retry_limit=args.read_empty_retry_limit,
+    )
+    range_raw = ctrl.read_range_data(
+        expected_samples=expected_samples,
+        range_chunk_samples=args.range_chunk_samples,
+        range_retry_attempts=args.range_retry_attempts,
+        read_empty_retry_limit=args.read_empty_retry_limit,
+    )
+
+    all_samples = ctrl.save_raw_measure_data(
+        output_file=args.all_output,
+        raw_data=all_raw,
+        csv_output_file=args.all_csv_output,
+    )
+    range_samples = ctrl.save_raw_measure_data(
+        output_file=args.output,
+        raw_data=range_raw,
+        csv_output_file=args.csv_output,
+    )
+
+    if all_samples != expected_samples or range_samples != expected_samples:
+        raise RuntimeError(
+            "ADC compare sample count mismatch: expected=%d all=%d range=%d"
+            % (expected_samples, all_samples, range_samples)
+        )
+
+    mismatch_index = first_mismatch_index(all_raw, range_raw)
+    if mismatch_index >= 0:
+        all_value = all_raw[mismatch_index] if mismatch_index < len(all_raw) else None
+        range_value = (
+            range_raw[mismatch_index] if mismatch_index < len(range_raw) else None
+        )
+        raise RuntimeError(
+            "ALL/RANGE data mismatch: first_mismatch_byte=%d "
+            "all_value=%s range_value=%s all_bytes=%d range_bytes=%d"
+            % (
+                mismatch_index,
+                "EOF" if all_value is None else "0x%02X" % all_value,
+                "EOF" if range_value is None else "0x%02X" % range_value,
+                len(all_raw),
+                len(range_raw),
+            )
+        )
+
+    logger.info(
+        "loop=%d COMPARE_PASS samples=%d bytes=%d all_output=%s range_output=%s",
+        loop_index,
+        expected_samples,
+        len(all_raw),
+        args.all_output,
+        args.output,
+    )
+
+
+def force_close_range_test(
+    ctrl: adc_controller,
+    args: argparse.Namespace,
+    logger: logging.Logger,
+    loop_index: int,
+    expected_samples: int,
+) -> None:
+    trigger_sample = args.force_close_range_at_sample
+    if trigger_sample is None:
+        raise ValueError("force close trigger sample is not set")
+
+    if trigger_sample >= expected_samples:
+        raise ValueError(
+            "force close trigger sample must be less than expected_samples: "
+            "trigger=%d expected_samples=%d" % (trigger_sample, expected_samples)
+        )
+
+    logger.warning(
+        "loop=%d FORCE_CLOSE_RANGE_TEST expected_samples=%d trigger_sample=%d "
+        "range_chunk_samples=%d",
+        loop_index,
+        expected_samples,
+        trigger_sample,
+        args.range_chunk_samples,
+    )
+
+    next_seq = 0
+    received_bytes = 0
+
+    while next_seq < expected_samples:
+        chunk_samples = min(args.range_chunk_samples, expected_samples - next_seq)
+        chunk_bytes = chunk_samples * BYTES_PER_SAMPLE
+
+        ctrl.reset_input_buffer()
+        logger.info(
+            "loop=%d START_TRANSMISSION_RANGE seq=%d count=%d",
+            loop_index,
+            next_seq,
+            chunk_samples,
+        )
+        ctrl.start_transmission_range_no_response(
+            starting_seq=next_seq,
+            count=chunk_samples,
+        )
+
+        if next_seq <= trigger_sample < next_seq + chunk_samples:
+            logger.warning(
+                "loop=%d FORCE_CLOSE serial after RANGE command: "
+                "seq=%d count=%d trigger_sample=%d received_bytes=%d",
+                loop_index,
+                next_seq,
+                chunk_samples,
+                trigger_sample,
+                received_bytes,
+            )
+            ctrl.close()
+
+        data = ctrl._read_serial_exact_bytes(
+            expected_bytes=chunk_bytes,
+            read_empty_retry_limit=args.read_empty_retry_limit,
+            context=(
+                "force-close range seq=%d count=%d"
+                % (next_seq, chunk_samples)
+            ),
+        )
+
+        if len(data) != chunk_bytes:
+            raise RuntimeError(
+                "force close range data size mismatch: seq=%d count=%d "
+                "expected=%d received=%d"
+                % (next_seq, chunk_samples, chunk_bytes, len(data))
+            )
+
+        received_bytes += len(data)
+        next_seq += chunk_samples
+
+    raise RuntimeError(
+        "force close trigger was not reached: trigger_sample=%d expected_samples=%d"
+        % (trigger_sample, expected_samples)
+    )
 
 
 def run_measurement_loop(
@@ -244,12 +521,28 @@ def run_measurement_loop(
 
     logger.info("loop=%d PASS query_count=%d", loop_index, query_count)
 
+    if args.force_close_range_at_sample is not None:
+        expected_samples = expected_sample_count(args)
+        force_close_range_test(ctrl, args, logger, loop_index, expected_samples)
+    elif args.compare_all_range:
+        expected_samples = expected_sample_count(args)
+        compare_all_range_data(ctrl, args, logger, loop_index, expected_samples)
+    elif args.read_data:
+        expected_samples = expected_sample_count(args)
+        read_range_test_data(ctrl, args, logger, loop_index, expected_samples)
+
 
 def maybe_abort(
     ctrl: adc_controller,
     logger: logging.Logger,
     loop_index: int,
 ) -> None:
+    try:
+        logger.warning("loop=%d ABORT_TRANSMISSION after failure", loop_index)
+        ctrl.abort_transmission()
+    except Exception as err:
+        logger.warning("loop=%d ABORT_TRANSMISSION failed: %r", loop_index, err)
+
     try:
         logger.warning("loop=%d ABORT_MEASUREMENT after failure", loop_index)
         ctrl.abort_measurement()
@@ -378,6 +671,27 @@ def validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> 
         parser.error("--loop-delay must be >= 0")
     if args.setup_retries < 1:
         parser.error("--setup-retries must be >= 1")
+    if args.read_chunk_samples <= 0:
+        parser.error("--read-chunk-samples must be > 0")
+    if args.range_chunk_samples <= 0:
+        parser.error("--range-chunk-samples must be > 0")
+    if args.range_retry_attempts < 1:
+        parser.error("--range-retry-attempts must be >= 1")
+    if args.read_empty_retry_limit < 0:
+        parser.error("--read-empty-retry-limit must be >= 0")
+    if (
+        args.force_close_range_at_sample is not None
+        and args.force_close_range_at_sample < 0
+    ):
+        parser.error("--force-close-range-at-sample must be >= 0")
+    if (args.read_data or args.compare_all_range) and not args.output:
+        parser.error("--output is required when data output is enabled")
+    if (args.read_data or args.compare_all_range) and not args.csv_output:
+        parser.error("--csv-output is required when data output is enabled")
+    if args.compare_all_range and not args.all_output:
+        parser.error("--all-output is required when --compare-all-range is used")
+    if args.compare_all_range and not args.all_csv_output:
+        parser.error("--all-csv-output is required when --compare-all-range is used")
 
 
 def main() -> int:
@@ -389,10 +703,15 @@ def main() -> int:
     logger = setup_logger(args.log_level)
     logger.info("ADC communication test started")
     logger.info(
-        "settings=%s reopen_each_loop=%s loops=%d timeout=%.3f write_timeout=%.3f",
+        "settings=%s reopen_each_loop=%s loops=%d read_data=%s "
+        "compare_all_range=%s force_close_range_at_sample=%s "
+        "timeout=%.3f write_timeout=%.3f",
         args.settings,
         args.reopen_each_loop,
         args.loops,
+        args.read_data,
+        args.compare_all_range,
+        args.force_close_range_at_sample,
         args.timeout,
         args.write_timeout,
     )
