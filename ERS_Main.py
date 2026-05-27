@@ -778,6 +778,17 @@ class ERSMainApp:
             )
             return
 
+        if self.fault_message == "ADC CAPTURE FAIL":
+            self.job = None
+            self.send_msg("FAIL")
+            self.send_msg(self.fault_message)
+            self.set_state("READY")
+            self.console(
+                f">> Recoverable Error Stop and Send Fail: {self.fault_message}",
+                level="error",
+            )
+            return
+
         self.send_FAIL()
 
         if self.fault_message:

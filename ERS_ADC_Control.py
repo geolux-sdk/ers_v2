@@ -799,7 +799,7 @@ class adc_controller:
 
                 data = self._read_serial_exact_bytes(
                     expected_bytes=chunk_bytes,
-                    read_empty_retry_limit=read_empty_retry_limit,
+                    read_empty_retry_limit=1,
                     context=(
                         "range seq=%d count=%d attempt=%d/%d"
                         % (next_seq, chunk_samples, attempt, range_retry_attempts)
