@@ -131,6 +131,15 @@ class adc_controller:
                 write_timeout=self.write_timeout,
             )
             self.logger.info("Serial opened: %s", self.port)
+            try:
+                self.ser.dtr = True
+                self.logger.info("Serial DTR set HIGH: %s", self.port)
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to set Serial DTR HIGH after open %s: %r",
+                    self.port,
+                    err,
+                )
 
         except serial.SerialException as err:
             self.logger.error("Failed to open serial port %s: %r", self.port, err)
