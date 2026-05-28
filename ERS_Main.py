@@ -804,7 +804,7 @@ class ERSMainApp:
             )
             return
 
-        if self.fault_message == "ADC CAPTURE FAIL":
+        if self.fault_message in ("ADC CAPTURE FAIL", "RELAY SETUP FAIL"):
             self.job = None
             self.send_msg("FAIL")
             self.send_msg(self.fault_message)
