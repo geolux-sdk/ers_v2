@@ -83,10 +83,6 @@ class relay_board_controller:
 
         return send_msg
 
-    @staticmethod
-    def _format_packet(packet: bytes) -> str:
-        return packet.hex(" ") if packet else "<empty>"
-
     def _log_recv_failure(self, attempt, max_attempts, message, *args) -> None:
         log_func = self.logger.error if attempt >= max_attempts else self.logger.warning
         log_func("attempt=%d/%d " + message, attempt, max_attempts, *args)
@@ -98,17 +94,16 @@ class relay_board_controller:
             self._log_recv_failure(
                 attempt,
                 max_attempts,
-                "recv header size error: expected=3 received=%d packet=%s",
+                "recv header size error: expected=3 received=%d",
                 len(head_data),
-                self._format_packet(head_data),
             )
             return False
         if head_data[0] != 0xFF:
             self._log_recv_failure(
                 attempt,
                 max_attempts,
-                "invalid header: packet=%s",
-                self._format_packet(head_data),
+                "invalid header: received=0x%02X",
+                head_data[0],
             )
             return False
         
@@ -117,16 +112,14 @@ class relay_board_controller:
         checksum = head_data[2]
 
         received_data = ser.read(packnum * 4)
-        packet = head_data + received_data
         
         if len(received_data) != packnum * 4:
             self._log_recv_failure(
                 attempt,
                 max_attempts,
-                "recv data size mismatch: expected=%d received=%d packet=%s",
+                "recv data size mismatch: expected=%d received=%d",
                 packnum * 4,
                 len(received_data),
-                self._format_packet(packet),
             )
             return False
 
@@ -137,10 +130,9 @@ class relay_board_controller:
             self._log_recv_failure(
                 attempt,
                 max_attempts,
-                "checksum mismatch: received=0x%02X calculated=0x%02X packet=%s",
+                "checksum mismatch: received=0x%02X calculated=0x%02X",
                 checksum,
                 calc_checksum,
-                self._format_packet(packet),
             )
             return False
 
@@ -148,9 +140,8 @@ class relay_board_controller:
             self._log_recv_failure(
                 attempt,
                 max_attempts,
-                "unexpected packnum=%d packet=%s",
+                "unexpected packnum=%d",
                 packnum,
-                self._format_packet(packet),
             )
             return False
 
