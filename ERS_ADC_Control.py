@@ -352,7 +352,7 @@ class adc_controller:
 
     def abort_transmission(self) -> None:
         packet = build_abort_transmission_command()
-        self.send_command_expect_ok(packet, "ABORT_TRANSMISSION")
+        self.send_command_no_response(packet, "ABORT_TRANSMISSION")
 
     def software_reset(self) -> None:
         packet = build_software_reset_command()
@@ -597,19 +597,6 @@ class adc_controller:
         return bytes(data_buffer)
 
     def _prepare_range_retry(self, retry_delay_sec: float) -> None:
-        try:
-            self.reset_input_buffer()
-        except Exception as err:
-            self.logger.warning("ADC range retry input buffer reset failed: %r", err)
-
-        try:
-            self.abort_transmission()
-        except Exception as err:
-            self.logger.warning(
-                "ADC range retry ABORT_TRANSMISSION failed or was not needed: %r",
-                err,
-            )
-
         try:
             self.reset_input_buffer()
         except Exception as err:
