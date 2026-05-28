@@ -753,12 +753,12 @@ class ERSMainApp:
                             relay_clear_ok = await asyncio.to_thread(self.relay.clear)
                             if not relay_clear_ok:
                                 self.console(
-                                    ">> Relay clear after ADC capture failed: no response",
+                                    ">> Relay clear after ADC capture returned no response",
                                     level="warning",
                                 )
                     except Exception as err:
                         self.console(
-                            f">> Relay clear after ADC capture failed: {repr(err)}",
+                            f">> Relay clear after ADC capture error: {repr(err)}",
                             level="warning",
                         )
 
