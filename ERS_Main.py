@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import time
 
 from jsonschema import ValidationError
 
@@ -26,6 +25,7 @@ class ERSMainApp:
         self.relay = None
         self.power = None
         self.gpio = None
+        self.relay_power_enabled = False
 
         self.jobpath = ""
         self.job = None
@@ -63,9 +63,7 @@ class ERSMainApp:
 
         try:
             self.gpio = GPIOController(self.logger)
-            self.gpio.enable_relay_power()
-            time.sleep(1.0)
-            self.console(">> GPIO OPENED relay power enabled")
+            self.console(">> GPIO OPENED")
         except Exception as err:
             self.console(f">> GPIO init error: {repr(err)}", level="error")
             self.set_state("FAULT")
@@ -76,7 +74,7 @@ class ERSMainApp:
                 **self.config.settings["relay"],
                 logger=self.logger,
             )
-            relay_flag = self.relay.test_clear()
+            relay_flag = True
         except Exception as err:
             self.console(f">> Relay init error: {repr(err)}", level="error")
             relay_flag = False
@@ -132,7 +130,7 @@ class ERSMainApp:
         초기화 실패로 일부 객체가 없을 수 있으므로 None 체크를 사용한다.
         """
         try:
-            if self.relay is not None:
+            if self.relay is not None and self.relay_power_enabled:
                 relay_clear_ok = self.relay.clear()
                 if not relay_clear_ok:
                     self.console(">> Relay clear during close failed: no response", level="warning")
@@ -632,6 +630,40 @@ class ERSMainApp:
                 worklist = job["TestADCCmds"]
                 self.console(f">> TestADCCmds START {worklist}")
 
+                power_param["voltage"] = 30
+
+            else:
+                worklist = job["Cmds"]
+                self.console(f">> Cmds START {worklist}")
+
+            try:
+                if self.gpio is None:
+                    raise RuntimeError("GPIO controller is not initialized")
+                self.gpio.enable_relay_power()
+                self.relay_power_enabled = True
+                await asyncio.sleep(1.0)
+            except Exception as err:
+                self.fault_message = "RELAY POWER ENABLE FAIL"
+                self.console(f">> {self.fault_message}: {repr(err)}", level="error")
+                await self.safe_error_stop_async(job)
+                continue
+
+            try:
+                if self.relay is None:
+                    raise RuntimeError("relay controller is not initialized")
+                relay_clear_ok = await asyncio.to_thread(self.relay.test_clear)
+                if not relay_clear_ok:
+                    self.fault_message = "RELAY INIT CLEAR FAIL"
+                    self.console(f">> {self.fault_message}", level="error")
+                    await self.safe_error_stop_async(job)
+                    continue
+            except Exception as err:
+                self.fault_message = "RELAY INIT CLEAR EXCEPTION"
+                self.console(f">> {self.fault_message}: {repr(err)}", level="error")
+                await self.safe_error_stop_async(job)
+                continue
+
+            if do_adc_test:
                 try:
                     self.gpio.enable_test_mode()
                     await asyncio.sleep(1.0)
@@ -640,12 +672,6 @@ class ERSMainApp:
                     self.console(f">> {self.fault_message}: {repr(err)}", level="error")
                     await self.safe_error_stop_async(job)
                     continue
-
-                power_param["voltage"] = 30
-
-            else:
-                worklist = job["Cmds"]
-                self.console(f">> Cmds START {worklist}")
 
             try:
                 if self.gpio is not None:
@@ -810,7 +836,7 @@ class ERSMainApp:
         Stop shared hardware resources without blocking the asyncio event loop.
         """
         try:
-            if self.relay is not None:
+            if self.relay is not None and self.relay_power_enabled:
                 relay_clear_ok = await asyncio.to_thread(self.relay.clear)
                 if not relay_clear_ok:
                     self.console(
@@ -848,6 +874,16 @@ class ERSMainApp:
                     await asyncio.sleep(1.0)
             except Exception as err:
                 self.console(f">> Disable test mode failed: {repr(err)}", level="error")
+
+        try:
+            if self.gpio is not None and self.relay_power_enabled:
+                self.gpio.disable_relay_power()
+                self.relay_power_enabled = False
+        except Exception as err:
+            self.console(
+                f">> Disable relay power failed during {stop_type} stop: {repr(err)}",
+                level="error",
+            )
 
     def set_relay(self, keys, values):
         result_dict = dict(zip(keys, values))

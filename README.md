@@ -371,6 +371,6 @@ RELAY_PWREN LOW     -> relay power disabled
 
 `TESTADCSTART` 작업에서는 테스트 모드를 켠 뒤 1초 안정화 대기를 하고, 작업 종료 또는 실패 시 테스트 모드를 끄고 다시 1초 안정화 대기를 수행합니다.
 
-프로그램 시작 시에는 GPIO를 먼저 초기화한 뒤 `RELAY_PWREN`을 HIGH로 설정하고 1초 안정화 대기 후 릴레이 보드를 초기화합니다. 프로그램 종료 시에는 GPIO cleanup 전에 GPIO20/24/45를 모두 LOW로 내립니다.
+프로그램 시작 시에는 GPIO만 초기화하고 `RELAY_PWREN`은 LOW 상태로 유지합니다. 작업 시작 시 `RELAY_PWREN`을 HIGH로 설정하고 1초 안정화 대기 후 릴레이 보드를 clear/test합니다. 작업이 정상 완료되거나 오류로 중지되면 relay clear 후 `RELAY_PWREN`을 LOW로 내립니다. 프로그램 종료 시에는 GPIO cleanup 전에 GPIO20/24/45를 모두 LOW로 내립니다.
 
 작업 시작 시 전압/전류 목표값을 설정하기 직전에 `BOOSTER_ENABLE`을 HIGH로 설정합니다. 작업이 정상 완료되거나 오류로 중지되면 전원 stop 후 `BOOSTER_ENABLE`을 LOW로 내립니다.
