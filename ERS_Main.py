@@ -749,7 +749,7 @@ class ERSMainApp:
                     break
                 finally:
                     try:
-                        if self.relay is not None:
+                        if self.relay is not None and self.relay_power_enabled:
                             relay_clear_ok = await asyncio.to_thread(self.relay.clear)
                             if not relay_clear_ok:
                                 self.console(
