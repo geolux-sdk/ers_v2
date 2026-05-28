@@ -43,11 +43,11 @@ DEFAULT_LOG_DIR = "./log"
 # ADC sample binary format:
 # time(2) + fb(2) + values(12 * 4) + ts(4) + null1(4) + null2(4)
 # total = 64 bytes/sample
-BYTES_PER_SAMPLE = 63
+BYTES_PER_SAMPLE = 64
 
 DEFAULT_READ_CHUNK_SAMPLES = 200
 DEFAULT_READ_EMPTY_RETRY_LIMIT = 5
-DEFAULT_RANGE_READ_CHUNK_SAMPLES = 32
+DEFAULT_RANGE_READ_CHUNK_SAMPLES = 64
 DEFAULT_RANGE_READ_RETRY_ATTEMPTS = 5
 DEFAULT_RANGE_READ_RETRY_DELAY_SEC = 0.05
 
@@ -772,7 +772,7 @@ class adc_controller:
 
             for attempt in range(1, range_retry_attempts + 1):
                 self.reset_input_buffer()
-                self.logger.debug(
+                self.logger.info(
                     "START_TRANSMISSION_RANGE seq=%d count=%d attempt=%d/%d",
                     next_seq,
                     chunk_samples,
@@ -831,7 +831,7 @@ class adc_controller:
             raw_data.extend(chunk_data)
             next_seq += chunk_samples
 
-            self.logger.debug(
+            self.logger.info(
                 "ADC range received: samples=%d / %d, bytes=%d / %d",
                 next_seq,
                 expected_samples,
