@@ -772,7 +772,7 @@ class adc_controller:
 
             for attempt in range(1, range_retry_attempts + 1):
                 self.reset_input_buffer()
-                self.logger.info(
+                self.logger.debug(
                     "START_TRANSMISSION_RANGE seq=%d count=%d attempt=%d/%d",
                     next_seq,
                     chunk_samples,
@@ -831,7 +831,7 @@ class adc_controller:
             raw_data.extend(chunk_data)
             next_seq += chunk_samples
 
-            self.logger.info(
+            self.logger.debug(
                 "ADC range received: samples=%d / %d, bytes=%d / %d",
                 next_seq,
                 expected_samples,
