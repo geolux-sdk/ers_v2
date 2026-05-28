@@ -2,7 +2,7 @@
     "logger": {
         "folder": "./log",
         "filename": "ERS.log",
-        "level": "INFO",
+        "level": "WARNING",
         "console": true
     },
     "name": "ERS V2 CONTROLLER",
