@@ -43,7 +43,7 @@
             "P11": 13
         },
         "outport_num": 48,
-        "comport": "/dev/ttyAMA3"
+        "comport": "/dev/ttyUSB0"
     },
     "adc": {
         "port": "/dev/ttyACM0",
