@@ -727,6 +727,15 @@ class ERSMainApp:
                     await self.safe_error_stop_async(job)
                     break
 
+                await asyncio.sleep(1.0)
+
+                if self.process_stop_event.is_set():
+                    self.process_stop_event.clear()
+                    self.fault_message = "CANCEL BY USER"
+                    self.console(f">> {self.fault_message}", level="warning")
+                    await self.safe_error_stop_async(job)
+                    break
+
                 file_name_base = job["FileNameBase"]
                 filepath = os.path.join(
                     job["DataDir"],
