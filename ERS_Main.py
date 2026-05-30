@@ -702,6 +702,9 @@ class ERSMainApp:
 
             self.console(">> JOB START ------------------------")
 
+            adc_capture_attempts = 3
+            adc_capture_retry_delay_sec = 1.0
+
             for idx, work in enumerate(worklist, start=1):
                 if self.process_stop_event.is_set():
                     self.process_stop_event.clear()
@@ -730,53 +733,98 @@ class ERSMainApp:
                     file_name_base + "-" + f"{idx:03}" + ".dat",
                 )
 
-                try:
-                    def capture_adc():
-                        with adc_controller(**adc_settings, logger=self.logger) as adc:
-                            return adc.capture(
-                                output_file=filepath,
-                                **adc_param,
-                            )
+                def capture_adc():
+                    with adc_controller(**adc_settings, logger=self.logger) as adc:
+                        return adc.capture(
+                            output_file=filepath,
+                            **adc_param,
+                        )
 
-                    received_samples = await asyncio.to_thread(capture_adc)
+                adc_capture_ok = False
+                adc_stop_required = False
+                last_adc_error = None
+
+                for attempt in range(1, adc_capture_attempts + 1):
+                    if self.process_stop_event.is_set():
+                        self.process_stop_event.clear()
+                        self.fault_message = "CANCEL BY USER"
+                        self.console(f">> {self.fault_message}", level="warning")
+                        await self.safe_error_stop_async(job)
+                        adc_stop_required = True
+                        break
+
                     self.console(
-                        f">> ADC Completed: received_samples={received_samples}"
+                        f">> ADC Capture attempt {attempt}/{adc_capture_attempts}"
                     )
-                except Exception as err:
-                    self.fault_message = "ADC CAPTURE FAIL"
-                    self.console(f">> {self.fault_message}: {repr(err)}", level="error")
-                    await self.safe_error_stop_async(job)
-                    break
-                finally:
+
                     try:
-                        if self.relay is not None and self.relay_power_enabled:
-                            relay_clear_ok = await asyncio.to_thread(self.relay.clear)
-                            if not relay_clear_ok:
-                                self.console(
-                                    ">> Relay clear after ADC capture returned no response",
-                                    level="warning",
-                                )
-                    except Exception as err:
+                        received_samples = await asyncio.to_thread(capture_adc)
+                        adc_capture_ok = True
                         self.console(
-                            f">> Relay clear after ADC capture error: {repr(err)}",
+                            f">> ADC Completed: "
+                            f"attempt={attempt}/{adc_capture_attempts}, "
+                            f"received_samples={received_samples}"
+                        )
+                    except Exception as err:
+                        last_adc_error = err
+                        self.console(
+                            f">> ADC capture attempt failed: "
+                            f"attempt={attempt}/{adc_capture_attempts}, "
+                            f"err={repr(err)}",
                             level="warning",
                         )
 
-                try:
-                    power_values = await asyncio.to_thread(self.power.monitoring_values)
-                except Exception as err:
-                    self.fault_message = "POWER MONITORING FAIL"
-                    self.console(f">> {self.fault_message}: {repr(err)}", level="error")
-                    await self.safe_error_stop_async(job)
+                    try:
+                        power_values = await asyncio.to_thread(
+                            self.power.monitoring_values
+                        )
+                    except Exception as err:
+                        self.fault_message = "POWER MONITORING FAIL"
+                        self.console(
+                            f">> {self.fault_message}: {repr(err)}",
+                            level="error",
+                        )
+                        await self.safe_error_stop_async(job)
+                        adc_stop_required = True
+                        break
+
+                    self.console(
+                        f">> Monitoring Power: "
+                        f"attempt={attempt}/{adc_capture_attempts}, "
+                        f"values={power_values}"
+                    )
+
+                    if power_values.get("error_status", 0) != 0:
+                        self.fault_message = (
+                            f"POWER ERROR FAIL: "
+                            f"error_status={power_values.get('error_status')}"
+                        )
+                        self.console(f">> {self.fault_message}", level="error")
+                        await self.safe_error_stop_async(job)
+                        adc_stop_required = True
+                        break
+
+                    if adc_capture_ok:
+                        break
+
+                    if attempt < adc_capture_attempts:
+                        self.console(
+                            f">> Retry ADC capture after "
+                            f"{adc_capture_retry_delay_sec:.1f} sec"
+                        )
+                        await asyncio.sleep(adc_capture_retry_delay_sec)
+
+                if adc_stop_required:
                     break
 
-                self.console(f">> Monitoring Power: {power_values}")
-
-                if power_values.get("error_status", 0) != 0:
-                    self.fault_message = (
-                        f"POWER ERROR FAIL: error_status={power_values.get('error_status')}"
+                if not adc_capture_ok:
+                    self.fault_message = "ADC CAPTURE FAIL"
+                    self.console(
+                        f">> {self.fault_message}: "
+                        f"attempts={adc_capture_attempts}, "
+                        f"last_error={repr(last_adc_error)}",
+                        level="error",
                     )
-                    self.console(f">> {self.fault_message}", level="error")
                     await self.safe_error_stop_async(job)
                     break
 
