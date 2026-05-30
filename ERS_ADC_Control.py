@@ -45,6 +45,8 @@ BYTES_PER_SAMPLE = 64
 
 DEFAULT_READ_CHUNK_SAMPLES = 200
 DEFAULT_READ_EMPTY_RETRY_LIMIT = 5
+DEFAULT_ALL_READ_RETRY_ATTEMPTS = 3
+DEFAULT_ALL_READ_RETRY_DELAY_SEC = 0.05
 DEFAULT_RANGE_READ_CHUNK_SAMPLES = 63
 DEFAULT_RANGE_READ_RETRY_ATTEMPTS = 5
 DEFAULT_RANGE_READ_RETRY_DELAY_SEC = 0.05
@@ -683,6 +685,7 @@ class adc_controller:
         expected_samples: int,
         read_chunk_samples: int = DEFAULT_READ_CHUNK_SAMPLES,
         read_empty_retry_limit: int = DEFAULT_READ_EMPTY_RETRY_LIMIT,
+        all_retry_attempts: int = DEFAULT_ALL_READ_RETRY_ATTEMPTS,
     ) -> bytes:
         if expected_samples <= 0:
             raise ValueError("expected_samples must be greater than 0")
@@ -690,49 +693,120 @@ class adc_controller:
         if read_chunk_samples <= 0:
             raise ValueError("read_chunk_samples must be greater than 0")
 
+        if read_empty_retry_limit < 0:
+            raise ValueError("read_empty_retry_limit must be >= 0")
+
+        if all_retry_attempts < 1:
+            raise ValueError("all_retry_attempts must be >= 1")
+
         expected_bytes = expected_samples * BYTES_PER_SAMPLE
         read_chunk_bytes = read_chunk_samples * BYTES_PER_SAMPLE
         start_time = time.time()
+        last_error: Optional[Exception] = None
+        last_received_bytes = 0
 
         self.logger.info(
-            "Start receiving ADC data by all: expected_samples=%d, expected_bytes=%d",
+            "Start receiving ADC data by all: expected_samples=%d, "
+            "expected_bytes=%d, retry_attempts=%d",
             expected_samples,
             expected_bytes,
+            all_retry_attempts,
         )
 
-        self.reset_input_buffer()
-        self.start_transmission_all_no_response()
+        for attempt in range(1, all_retry_attempts + 1):
+            if attempt > 1 and DEFAULT_ALL_READ_RETRY_DELAY_SEC > 0:
+                time.sleep(DEFAULT_ALL_READ_RETRY_DELAY_SEC)
 
-        raw_data = self._read_serial_exact_bytes(
-            expected_bytes=expected_bytes,
-            read_empty_retry_limit=read_empty_retry_limit,
-            context="all",
-            max_read_bytes=read_chunk_bytes,
-        )
+            try:
+                self.reset_input_buffer()
+                self.logger.debug(
+                    "START_TRANSMISSION_ALL attempt=%d/%d",
+                    attempt,
+                    all_retry_attempts,
+                )
+                self.start_transmission_all_no_response()
 
-        elapsed = time.time() - start_time
-        received_bytes = len(raw_data)
-        received_samples = received_bytes // BYTES_PER_SAMPLE
+                raw_data = self._read_serial_exact_bytes(
+                    expected_bytes=expected_bytes,
+                    read_empty_retry_limit=read_empty_retry_limit,
+                    context=(
+                        "all attempt=%d/%d" % (attempt, all_retry_attempts)
+                    ),
+                    max_read_bytes=read_chunk_bytes,
+                )
+            except Exception as err:
+                last_error = err
+                if attempt < all_retry_attempts:
+                    self.logger.warning(
+                        "ADC all data read failed: attempt=%d/%d err=%r",
+                        attempt,
+                        all_retry_attempts,
+                        err,
+                    )
+                    continue
+                break
 
-        self.logger.info(
-            "ADC all data received: received_samples=%d, received_bytes=%d, elapsed=%.2f sec",
-            received_samples,
-            received_bytes,
-            elapsed,
-        )
+            elapsed = time.time() - start_time
+            received_bytes = len(raw_data)
+            last_received_bytes = received_bytes
+            received_samples = received_bytes // BYTES_PER_SAMPLE
 
-        if received_bytes != expected_bytes:
+            self.logger.info(
+                "ADC all data received: attempt=%d/%d, "
+                "received_samples=%d, received_bytes=%d, elapsed=%.2f sec",
+                attempt,
+                all_retry_attempts,
+                received_samples,
+                received_bytes,
+                elapsed,
+            )
+
+            if received_bytes == expected_bytes:
+                return raw_data
+
             missing_bytes = expected_bytes - received_bytes
-            message = (
+            last_error = RuntimeError(
                 "ADC all data size mismatch: "
                 f"expected={expected_bytes} bytes, "
                 f"received={received_bytes} bytes, "
                 f"missing={missing_bytes} bytes"
             )
+
+            if attempt < all_retry_attempts:
+                self.logger.warning(
+                    "%s, attempt=%d/%d",
+                    last_error,
+                    attempt,
+                    all_retry_attempts,
+                )
+
+        if last_error is not None:
+            if isinstance(last_error, RuntimeError):
+                message = (
+                    "%s, attempts=%d" % (last_error, all_retry_attempts)
+                )
+                self.logger.error(message)
+                raise RuntimeError(message) from last_error
+            message = (
+                "ADC all data read failed after %d attempts: %r"
+                % (all_retry_attempts, last_error)
+            )
+            self.logger.error(message)
+            raise RuntimeError(message) from last_error
+
+        if last_received_bytes != expected_bytes:
+            missing_bytes = expected_bytes - last_received_bytes
+            message = (
+                "ADC all data size mismatch: "
+                f"expected={expected_bytes} bytes, "
+                f"received={last_received_bytes} bytes, "
+                f"missing={missing_bytes} bytes, "
+                f"attempts={all_retry_attempts}"
+            )
             self.logger.error(message)
             raise RuntimeError(message)
 
-        return raw_data
+        raise RuntimeError("ADC all data read failed without an exception")
 
     def read_range_data(
         self,
