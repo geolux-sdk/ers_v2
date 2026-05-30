@@ -24,7 +24,7 @@ DEFAULT_ON_TIME_MS = 500.0
 DEFAULT_OFF_TIME_MS = 50.0
 DEFAULT_STACKS = 1
 DEFAULT_OUTPUT_DIR = "./log"
-DEFAULT_FILE_NAME_BASE = "adc_comm_test"
+DEFAULT_OUTPUT_FILE = "adc_comm_test.dat"
 
 
 def setup_logger(level_name: str) -> logging.Logger:
@@ -133,12 +133,9 @@ def expected_sample_count(adc_param: Dict[str, Any]) -> int:
     )
 
 
-def make_output_file(args: argparse.Namespace, loop_index: int) -> str:
+def make_output_file(args: argparse.Namespace) -> str:
     os.makedirs(args.output_dir, exist_ok=True)
-    return os.path.join(
-        args.output_dir,
-        "%s-%03d.dat" % (DEFAULT_FILE_NAME_BASE, loop_index),
-    )
+    return os.path.join(args.output_dir, DEFAULT_OUTPUT_FILE)
 
 
 def run_capture_loop(
@@ -148,7 +145,7 @@ def run_capture_loop(
     logger: logging.Logger,
     loop_index: int,
 ) -> bool:
-    output_file = make_output_file(args, loop_index)
+    output_file = make_output_file(args)
     expected_samples = expected_sample_count(adc_param)
 
     logger.info(
