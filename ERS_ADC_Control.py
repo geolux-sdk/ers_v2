@@ -1033,12 +1033,10 @@ class adc_controller:
         self.start_measurement()
 
         self.logger.info("Waiting until ADC measurement is not BUSY...")
-        if expected_measurement_sec > 0:
-            self.logger.info(
-                "Sleeping for expected ADC measurement time: %.3f sec",
-                expected_measurement_sec,
-            )
-            time.sleep(expected_measurement_sec)
+        self.logger.info(
+            "Polling ADC status during expected measurement time: %.3f sec",
+            expected_measurement_sec,
+        )
 
         state = self.wait_until_not_busy(
             timeout_sec=busy_timeout_sec,
