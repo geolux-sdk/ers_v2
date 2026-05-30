@@ -982,16 +982,33 @@ class adc_controller:
             # 이전 QUERY_STATE 응답 잔여물이 있을 가능성을 제거한다.
             self.reset_input_buffer()
 
-            # Range transmission streams binary data without an OK response.
-            # If one chunk is short, only that range is requested again.
-            received_samples = self.read_range_to_file(
-                output_file=output_file,
-                expected_samples=expected_samples,
-                range_chunk_samples=range_chunk_samples,
-                range_retry_attempts=range_retry_attempts,
-                read_empty_retry_limit=read_empty_retry_limit,
-                retry_delay_sec=range_retry_delay_sec,
-            )
+            # Select one transmission mode by commenting the other line.
+            read_mode = "all"
+            # read_mode = "range"
+
+            if read_mode == "all":
+                raw_data = self.read_all_data(
+                    expected_samples=expected_samples,
+                    read_chunk_samples=read_chunk_samples,
+                    read_empty_retry_limit=read_empty_retry_limit,
+                )
+                received_samples = self._save_raw_measure_data(
+                    output_file=output_file,
+                    raw_data=raw_data,
+                )
+            elif read_mode == "range":
+                # Range transmission streams binary data without an OK response.
+                # If one chunk is short, only that range is requested again.
+                received_samples = self.read_range_to_file(
+                    output_file=output_file,
+                    expected_samples=expected_samples,
+                    range_chunk_samples=range_chunk_samples,
+                    range_retry_attempts=range_retry_attempts,
+                    read_empty_retry_limit=read_empty_retry_limit,
+                    retry_delay_sec=range_retry_delay_sec,
+                )
+            else:
+                raise ValueError("unsupported ADC read_mode: %s" % read_mode)
         else:
             received_samples = self.read_exact_to_file(
                 output_file=output_file,
