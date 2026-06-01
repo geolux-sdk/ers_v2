@@ -641,7 +641,7 @@ class ERSMainApp:
                     raise RuntimeError("GPIO controller is not initialized")
                 self.gpio.enable_relay_power()
                 self.relay_power_enabled = True
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(2.0)
             except Exception as err:
                 self.fault_message = "RELAY POWER ENABLE FAIL"
                 self.console(f">> {self.fault_message}: {repr(err)}", level="error")
