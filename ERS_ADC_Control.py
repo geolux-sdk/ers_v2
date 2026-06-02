@@ -19,6 +19,7 @@ from parser import (
 from ERS_ADC_Protocol import (
     ResponseCode,
     build_setup_command,
+    build_query_state_command,
     build_start_measurement_command,
     build_abort_measurement_command,
     build_start_transmission_all_command,
@@ -53,6 +54,8 @@ DEFAULT_RANGE_READ_RETRY_DELAY_SEC = 0.05
 DEFAULT_SAMPLE_RATE_HZ = 2400.0
 
 DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC = 0.1
+DEFAULT_MEASUREMENT_STATUS_RETRY_ATTEMPTS = 3
+DEFAULT_MEASUREMENT_STATUS_RETRY_DELAY_SEC = 0.1
 DEFAULT_SETUP_RETRY_ATTEMPTS = 5
 DEFAULT_SETUP_RETRY_DELAY_SEC = 0.2
 
@@ -308,6 +311,10 @@ class adc_controller:
     def start_measurement(self) -> None:
         packet = build_start_measurement_command()
         self.send_command_expect_ok(packet, "START_MEASUREMENT")
+
+    def query_measurement_state(self) -> ResponseCode:
+        packet = build_query_state_command()
+        return self.send_command(packet, "QUERY_MEASUREMENT_STATE")
 
     def abort_measurement(self) -> None:
         packet = build_abort_measurement_command()
@@ -997,6 +1004,32 @@ class adc_controller:
             measurement_settle_delay_sec,
         )
         time.sleep(measurement_wait_sec)
+
+        measurement_state = self.query_measurement_state()
+        for retry_index in range(DEFAULT_MEASUREMENT_STATUS_RETRY_ATTEMPTS):
+            if measurement_state != ResponseCode.BUSY:
+                break
+
+            self.logger.info(
+                "ADC measurement still busy: retry=%d/%d delay=%.3f sec",
+                retry_index + 1,
+                DEFAULT_MEASUREMENT_STATUS_RETRY_ATTEMPTS,
+                DEFAULT_MEASUREMENT_STATUS_RETRY_DELAY_SEC,
+            )
+            time.sleep(DEFAULT_MEASUREMENT_STATUS_RETRY_DELAY_SEC)
+            measurement_state = self.query_measurement_state()
+
+        if measurement_state == ResponseCode.BUSY:
+            raise RuntimeError(
+                "ADC measurement still BUSY after %d status retries"
+                % DEFAULT_MEASUREMENT_STATUS_RETRY_ATTEMPTS
+            )
+
+        if measurement_state != ResponseCode.OK:
+            raise RuntimeError(
+                "QUERY_MEASUREMENT_STATE failed: %s - %s"
+                % (measurement_state.name, describe_response(measurement_state))
+            )
 
         if start_transmission:
             # PC 테스트 코드처럼 데이터 전송 직전에 입력 버퍼를 비운다.
