@@ -9,8 +9,7 @@ from typing import Any, Dict
 
 from ERS_ADC_Control import (
     DEFAULT_BAUDRATE,
-    DEFAULT_BUSY_POLL_INTERVAL_SEC,
-    DEFAULT_BUSY_TIMEOUT_SEC,
+    DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC,
     DEFAULT_PORT,
     DEFAULT_SAMPLE_RATE_HZ,
     DEFAULT_TIMEOUT,
@@ -109,7 +108,6 @@ def build_adc_param() -> Dict[str, Any]:
     cycles = int(DEFAULT_STACKS)
 
     expected_samples = 4 * cycles * (on_samples + off_samples)
-    expected_duration_sec = expected_samples / DEFAULT_SAMPLE_RATE_HZ
 
     return {
         "pattern": pattern,
@@ -117,11 +115,7 @@ def build_adc_param() -> Dict[str, Any]:
         "off_samples": off_samples,
         "cycles": cycles,
         "sample_rate_hz": DEFAULT_SAMPLE_RATE_HZ,
-        "busy_timeout_sec": max(
-            DEFAULT_BUSY_TIMEOUT_SEC,
-            expected_duration_sec + 5.0,
-        ),
-        "busy_poll_interval_sec": DEFAULT_BUSY_POLL_INTERVAL_SEC,
+        "measurement_settle_delay_sec": DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC,
     }
 
 
@@ -209,13 +203,13 @@ def main() -> int:
     logger.info("loops=%d output_dir=%s", args.loops, args.output_dir)
     logger.info(
         "capture_defaults=task_type=%s on_time_ms=%.3f off_time_ms=%.3f "
-        "stacks=%d sample_rate=%.3f busy_poll_interval=%.3f",
+        "stacks=%d sample_rate=%.3f settle_delay=%.3f",
         DEFAULT_TASK_TYPE,
         DEFAULT_ON_TIME_MS,
         DEFAULT_OFF_TIME_MS,
         DEFAULT_STACKS,
         DEFAULT_SAMPLE_RATE_HZ,
-        DEFAULT_BUSY_POLL_INTERVAL_SEC,
+        DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC,
     )
     logger.info("adc_settings=%s", adc_settings)
     logger.info("adc_param=%s", adc_param)

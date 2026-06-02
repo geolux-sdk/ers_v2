@@ -19,7 +19,6 @@ from parser import (
 from ERS_ADC_Protocol import (
     ResponseCode,
     build_setup_command,
-    build_query_state_command,
     build_start_measurement_command,
     build_abort_measurement_command,
     build_start_transmission_all_command,
@@ -53,8 +52,7 @@ DEFAULT_RANGE_READ_RETRY_DELAY_SEC = 0.05
 
 DEFAULT_SAMPLE_RATE_HZ = 2400.0
 
-DEFAULT_BUSY_TIMEOUT_SEC = 10.0
-DEFAULT_BUSY_POLL_INTERVAL_SEC = 1.0
+DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC = 0.1
 DEFAULT_SETUP_RETRY_ATTEMPTS = 5
 DEFAULT_SETUP_RETRY_DELAY_SEC = 0.2
 
@@ -206,7 +204,7 @@ class adc_controller:
         """
         명령을 보내고 response code 1 byte를 읽는다.
 
-        SETUP, START_MEASUREMENT, QUERY_STATE, ABORT, RESET 등에 사용.
+        SETUP, START_MEASUREMENT, ABORT, RESET 등에 사용.
         """
         ser = self._require_serial()
 
@@ -307,10 +305,6 @@ class adc_controller:
             raise last_err
         raise RuntimeError("SETUP failed without an exception")
 
-    def query_state(self) -> ResponseCode:
-        packet = build_query_state_command()
-        return self.send_command(packet, "QUERY_STATE")
-
     def start_measurement(self) -> None:
         packet = build_start_measurement_command()
         self.send_command_expect_ok(packet, "START_MEASUREMENT")
@@ -366,47 +360,6 @@ class adc_controller:
     def software_reset(self) -> None:
         packet = build_software_reset_command()
         self.send_command_expect_ok(packet, "SOFTWARE_RESET")
-
-    # -------------------------------------------------------------------------
-    # Busy wait
-    # -------------------------------------------------------------------------
-
-    def wait_until_not_busy(
-        self,
-        timeout_sec: float = DEFAULT_BUSY_TIMEOUT_SEC,
-        poll_interval_sec: float = DEFAULT_BUSY_POLL_INTERVAL_SEC,
-    ) -> ResponseCode:
-        """
-        QUERY_STATE를 반복해서 ADC가 BUSY가 아닐 때까지 기다린다.
-
-        ESP32 firmware rule:
-            - BUSY: measurement is still running
-            - not BUSY: data can be requested
-        """
-        start_time = time.time()
-        query_count = 0
-
-        while True:
-            code = self.query_state()
-            query_count += 1
-
-            if code != ResponseCode.BUSY:
-                self.logger.info(
-                    "ADC is not busy: %s - %s, query_count=%d",
-                    code.name,
-                    describe_response(code),
-                    query_count,
-                )
-                return code
-
-            elapsed = time.time() - start_time
-            if elapsed >= timeout_sec:
-                raise TimeoutError(
-                    "ADC is still BUSY after %.2f sec, query_count=%d"
-                    % (timeout_sec, query_count)
-                )
-
-            time.sleep(poll_interval_sec)
 
     # -------------------------------------------------------------------------
     # Data read / save
@@ -978,9 +931,8 @@ class adc_controller:
         range_chunk_samples: int = DEFAULT_RANGE_READ_CHUNK_SAMPLES,
         range_retry_attempts: int = DEFAULT_RANGE_READ_RETRY_ATTEMPTS,
         range_retry_delay_sec: float = DEFAULT_RANGE_READ_RETRY_DELAY_SEC,
-        busy_timeout_sec: float = DEFAULT_BUSY_TIMEOUT_SEC,
-        busy_poll_interval_sec: float = DEFAULT_BUSY_POLL_INTERVAL_SEC,
         sample_rate_hz: float = DEFAULT_SAMPLE_RATE_HZ,
+        measurement_settle_delay_sec: float = DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC,
     ) -> int:
         """
         전체 측정 순서 실행.
@@ -989,9 +941,7 @@ class adc_controller:
             1. 입력 버퍼 비우기
             2. SETUP
             3. START_MEASUREMENT
-            4. QUERY_STATE 반복
-               - BUSY이면 계속 대기
-               - BUSY가 아니면 측정 완료로 판단
+            4. expected measurement time + settle delay 대기
             5. 입력 버퍼 비우기
             6. START_TRANSMISSION_ALL
                - 응답을 읽지 않음
@@ -1007,10 +957,14 @@ class adc_controller:
         if sample_rate_hz <= 0:
             raise ValueError("sample_rate_hz must be greater than 0")
 
+        measurement_settle_delay_sec = float(measurement_settle_delay_sec)
+        if measurement_settle_delay_sec < 0:
+            raise ValueError("measurement_settle_delay_sec must be >= 0")
+
         expected_measurement_sec = expected_samples / sample_rate_hz
 
         self.logger.info(
-            "Capture configuration: pattern=%d, on=%d, off=%d, cycles=%d, expected_samples=%d, sample_rate=%.2f Hz, expected_measurement=%.3f sec",
+            "Capture configuration: pattern=%d, on=%d, off=%d, cycles=%d, expected_samples=%d, sample_rate=%.2f Hz, expected_measurement=%.3f sec, settle_delay=%.3f sec",
             pattern,
             on_samples,
             off_samples,
@@ -1018,6 +972,7 @@ class adc_controller:
             expected_samples,
             sample_rate_hz,
             expected_measurement_sec,
+            measurement_settle_delay_sec,
         )
 
         # PC 테스트 코드처럼 명령 시작 전 입력 버퍼를 비운다.
@@ -1032,26 +987,20 @@ class adc_controller:
 
         self.start_measurement()
 
-        self.logger.info("Waiting until ADC measurement is not BUSY...")
+        measurement_wait_sec = (
+            expected_measurement_sec + measurement_settle_delay_sec
+        )
         self.logger.info(
-            "Polling ADC status during expected measurement time: %.3f sec",
+            "Waiting %.3f sec for ADC measurement: expected_measurement=%.3f sec, settle_delay=%.3f sec",
+            measurement_wait_sec,
             expected_measurement_sec,
+            measurement_settle_delay_sec,
         )
-
-        state = self.wait_until_not_busy(
-            timeout_sec=busy_timeout_sec,
-            poll_interval_sec=busy_poll_interval_sec,
-        )
-
-        if state != ResponseCode.OK:
-            raise RuntimeError(
-                "ADC measurement did not finish normally: %s - %s"
-                % (state.name, describe_response(state))
-            )
+        time.sleep(measurement_wait_sec)
 
         if start_transmission:
             # PC 테스트 코드처럼 데이터 전송 직전에 입력 버퍼를 비운다.
-            # 이전 QUERY_STATE 응답 잔여물이 있을 가능성을 제거한다.
+            # 이전 명령 응답 잔여물이 있을 가능성을 제거한다.
             self.reset_input_buffer()
 
             # Select one transmission mode by commenting the other line.

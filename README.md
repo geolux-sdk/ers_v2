@@ -342,7 +342,7 @@ job 파일의 `OnTime`, `OffTime`, `NoStack`과 `sample_rate`를 이용해 ADC s
 
 ADC 데이터는 job의 `DataDir` 아래에 `.dat` 파일로 저장됩니다. 예상 byte 수보다 적게 수신되면 작업 실패로 처리합니다.
 
-ADC busy timeout은 예상 측정 시간에 5초 여유를 더해 계산하되, 최소 10초를 사용합니다.
+ADC는 예상 측정 시간에 0.1초 hardware settle delay를 더해 기다린 뒤 데이터를 읽습니다.
 
 ### GPIO 통신
 
