@@ -75,10 +75,10 @@
             "overvoltage_threshold": 400,
             "overcurrent_threshold": 2000,
             "soft_start_rate": 5000,
-            "kp_cv": 0.01,
-            "ki_cv": 0.002,
+            "kp_cv": 0.03,
+            "ki_cv": 0.01,
             "kd_cv": 0,
-            "kp_cc": 0.3,
+            "kp_cc": 0.35,
             "ki_cc": 0.001,
             "kd_cc": 0
         }
