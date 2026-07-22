@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(python -m py_compile ERS_Power_Control.py mySettings.py)",
+      "PowerShell(if \\($?\\) { \"OK\" })",
+      "PowerShell(python -c \"from mySettings import mySettings; c = mySettings\\(\\); print\\('validate OK'\\); print\\(c.settings['power']['gain_profiles']\\)\")",
+      "PowerShell(git add ERS_Power_Control.py mySettings.py settings.json)",
+      "PowerShell(git push)",
+      "PowerShell(git check-ignore -v .claude/settings.json)",
+      "PowerShell(git add .claude/settings.json)"
+    ]
+  }
+}
