@@ -22,6 +22,7 @@ class power_controller:
         timeout: float = modbus_master.DEFAULT_TIMEOUT,
         device_id: int = modbus_master.DEFAULT_DEVICE_ID,
         init_values: Optional[dict] = None,
+        gain_profiles: Optional[list] = None,
         logger: Optional[logging.Logger] = None,
         auto_connect: bool = True,
     ):
@@ -30,6 +31,14 @@ class power_controller:
         self.timeout = timeout
         self.device_id = device_id
         self.init_values = init_values
+
+        # max_voltage 오름차순으로 정렬해서 보관한다.
+        # _select_gains()가 첫 번째로 매칭되는 프로파일을 사용하므로
+        # 설정 파일에 적힌 순서와 무관하게 낮은 구간이 먼저 검사된다.
+        self.gain_profiles = sorted(
+            gain_profiles or [],
+            key=lambda profile: profile["max_voltage"],
+        )
 
         self.logger = logger or logging.getLogger(__name__)
 
@@ -131,6 +140,38 @@ class power_controller:
             self.logger.exception("Error during current offset calibration: %r", err)
             return False
 
+    def _select_gains(self, voltage: int) -> dict:
+        """
+        target 전압에 맞는 gain 프로파일을 선택한다.
+
+        gain_profiles에서 voltage <= max_voltage 인 가장 낮은 구간의
+        gain 값들을 반환한다. 모든 구간을 초과하면 마지막(가장 높은)
+        프로파일을 사용한다. 프로파일이 없으면 빈 dict를 반환한다.
+        """
+
+        if not self.gain_profiles:
+            return {}
+
+        selected = self.gain_profiles[-1]
+
+        for profile in self.gain_profiles:
+            if voltage <= profile["max_voltage"]:
+                selected = profile
+                break
+        else:
+            self.logger.warning(
+                "Target voltage %s V exceeds all gain profiles, "
+                "using highest profile (max_voltage=%s)",
+                voltage,
+                selected["max_voltage"],
+            )
+
+        return {
+            key: value
+            for key, value in selected.items()
+            if key != "max_voltage"
+        }
+
     def monitoring_values(self) -> dict:
         inputs = self._read_input_registers()
 
@@ -173,9 +214,18 @@ class power_controller:
         )
 
         try:
+            gains = self._select_gains(voltage)
+            if gains:
+                self.logger.info(
+                    "Gain profile applied for %s V: %s",
+                    voltage,
+                    gains,
+                )
+
             result = self._write_holding_registers_by_name(
                 target_voltage=voltage,
                 target_load_current=current,
+                **gains,
             )
 
             if not all(result):

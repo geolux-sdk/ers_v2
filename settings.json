@@ -81,6 +81,22 @@
             "kp_cc": 0.35,
             "ki_cc": 0.001,
             "kd_cc": 0
-        }
+        },
+        "gain_profiles": [
+            {
+                "max_voltage": 40,
+                "kp_cv": 0.02,
+                "ki_cv": 0.006,
+                "kp_cc": 0.31,
+                "ki_cc": 0.003
+            },
+            {
+                "max_voltage": 400,
+                "kp_cv": 0.03,
+                "ki_cv": 0.01,
+                "kp_cc": 0.35,
+                "ki_cc": 0.001
+            }
+        ]
     }
 }

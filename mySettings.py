@@ -88,13 +88,34 @@ class mySettings:
                 "overvoltage_threshold": 400,
                 "overcurrent_threshold": 2000,
                 "soft_start_rate": 5000,
-                "kp_cv": 0.01,
-                "ki_cv": 0.002,
+                "kp_cv": 0.02,
+                "ki_cv": 0.006,
                 "kd_cv": 0,
-                "kp_cc": 0.3,
-                "ki_cc": 0.01,
+                "kp_cc": 0.31,
+                "ki_cc": 0.003,
                 "kd_cc": 0,
             },
+            # target 전압에 따른 gain 프로파일
+            # set_target() 호출 시 target_voltage <= max_voltage 인
+            # 가장 낮은 구간의 프로파일이 적용된다.
+            # (power_controller가 max_voltage 오름차순으로 정렬하므로
+            #  적는 순서는 무관하다)
+            "gain_profiles": [
+                {
+                    "max_voltage": 40,
+                    "kp_cv": 0.02,
+                    "ki_cv": 0.006,
+                    "kp_cc": 0.31,
+                    "ki_cc": 0.003,
+                },
+                {
+                    "max_voltage": 400,
+                    "kp_cv": 0.03,
+                    "ki_cv": 0.01,
+                    "kp_cc": 0.35,
+                    "ki_cc": 0.001,
+                },
+            ],
         },
     }
 
@@ -229,6 +250,24 @@ class mySettings:
                             "kd_cc",
                         ],
                         "additionalProperties": False,
+                    },
+                    "gain_profiles": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "max_voltage": {"type": "integer"},
+                                "kp_cv": {"type": "number"},
+                                "ki_cv": {"type": "number"},
+                                "kd_cv": {"type": "number"},
+                                "kp_cc": {"type": "number"},
+                                "ki_cc": {"type": "number"},
+                                "kd_cc": {"type": "number"},
+                            },
+                            "required": ["max_voltage"],
+                            "additionalProperties": False,
+                        },
+                        "minItems": 1,
                     },
                 },
                 "required": [
