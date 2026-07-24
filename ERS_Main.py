@@ -119,6 +119,9 @@ class ERSMainApp:
         """
         shell에는 항상 출력하고,
         logger가 준비되어 있으면 같은 내용을 log 파일에도 기록한다.
+
+        화면용 여백이 로그 레코드를 여러 줄로 깨뜨리지 않도록
+        logger에는 앞뒤 공백을 제거한 문자열을 넘긴다.
         """
         print(message, flush=True)
 
@@ -127,7 +130,7 @@ class ERSMainApp:
 
         try:
             log_func = getattr(self.logger, level, self.logger.info)
-            log_func(message)
+            log_func(str(message).strip())
         except Exception:
             pass
 
@@ -689,6 +692,8 @@ class ERSMainApp:
                 await self.safe_error_stop_async(job)
                 continue
 
+            self.console(">> RELAY CLEARED")
+
             if do_adc_test:
                 try:
                     self.gpio.enable_test_mode()
@@ -699,6 +704,8 @@ class ERSMainApp:
                     await self.safe_error_stop_async(job)
                     continue
 
+                self.console(">> TEST MODE ENABLED")
+
             try:
                 if self.gpio is not None:
                     self.gpio.enable_booster()
@@ -708,6 +715,8 @@ class ERSMainApp:
                 self.console(f">> {self.fault_message}: {repr(err)}", level="error")
                 await self.safe_error_stop_async(job)
                 continue
+
+            self.console(">> BOOSTER ENABLED")
 
             try:
                 power_setup_result = await asyncio.to_thread(
@@ -725,6 +734,11 @@ class ERSMainApp:
                 self.console(f">> {self.fault_message}", level="error")
                 await self.safe_error_stop_async(job)
                 continue
+
+            self.console(
+                f">> POWER SETUP OK: voltage={power_param['voltage']}V, "
+                f"current={power_param['current']}mA"
+            )
 
             self.console(">> JOB START ------------------------")
 
