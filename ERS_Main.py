@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 
 from jsonschema import ValidationError
 
@@ -13,6 +14,13 @@ from ERS_Relay_Control import relay_board_controller
 from mySettings import mySettings
 from myUDP import myUDP
 from pi_gpio import GPIOController
+
+
+# 릴레이 보드에 전원을 넣은 뒤 보드가 안정될 때까지의 고정 대기
+RELAY_POWER_SETTLE_SEC = 2.0
+
+# USB-UART 브리지가 열거되어 포트 노드가 생길 때까지의 최대 대기
+RELAY_PORT_WAIT_TIMEOUT_SEC = 15.0
 
 
 class ERSMainApp:
@@ -538,6 +546,26 @@ class ERSMainApp:
         self.console(">> load work file success")
         return job
 
+    async def wait_for_relay_port(self, timeout_sec):
+        """
+        릴레이 보드 전원을 넣은 뒤 시리얼 포트 노드가 생길 때까지 기다린다.
+
+        USB-UART 브리지는 열거에 수 초가 걸릴 수 있고 그 시간이 일정하지 않다.
+        고정 대기만으로 열면 포트가 아직 없어 open이 실패한다.
+        """
+        port = self.config.settings["relay"].get("comport")
+        if not port:
+            return True
+
+        deadline = time.monotonic() + timeout_sec
+
+        while not os.path.exists(port):
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.2)
+
+        return True
+
     async def worker(self):
         while not self.stop_event.is_set():
             if self.job is None:
@@ -627,10 +655,22 @@ class ERSMainApp:
                     raise RuntimeError("GPIO controller is not initialized")
                 self.gpio.enable_relay_power()
                 self.relay_power_enabled = True
-                await asyncio.sleep(2.0)
+                self.console(">> RELAY POWER ENABLED")
+                await asyncio.sleep(RELAY_POWER_SETTLE_SEC)
             except Exception as err:
                 self.fault_message = "RELAY POWER ENABLE FAIL"
                 self.console(f">> {self.fault_message}: {repr(err)}", level="error")
+                await self.safe_error_stop_async(job)
+                continue
+
+            if not await self.wait_for_relay_port(RELAY_PORT_WAIT_TIMEOUT_SEC):
+                self.fault_message = "RELAY PORT NOT FOUND"
+                self.console(
+                    f">> {self.fault_message}: "
+                    f"{self.config.settings['relay'].get('comport')}, "
+                    f"timeout={RELAY_PORT_WAIT_TIMEOUT_SEC}s",
+                    level="error",
+                )
                 await self.safe_error_stop_async(job)
                 continue
 
