@@ -54,7 +54,7 @@ class ERSMainApp:
 
         self.logger = self.config.get_logger()
 
-        self.console("\n\n--------- Program Started---------------------------------")
+        self.console("--------- Program Started---------------------------------")
         self.set_state("WAIT")
 
         try:
@@ -117,22 +117,25 @@ class ERSMainApp:
 
     def console(self, message, level="info"):
         """
-        shell에는 항상 출력하고,
-        logger가 준비되어 있으면 같은 내용을 log 파일에도 기록한다.
+        logger로만 기록한다.
+
+        settings.json의 logger.console 이 true면 logger의 stdout 핸들러를
+        통해 shell에도 같은 줄이 나가므로, 여기서 print를 겸하면 journal에
+        같은 내용이 두 번 들어간다. logger가 아직 준비되지 않은 초기화
+        구간에서만 print로 대체한다.
 
         화면용 여백이 로그 레코드를 여러 줄로 깨뜨리지 않도록
-        logger에는 앞뒤 공백을 제거한 문자열을 넘긴다.
+        앞뒤 공백은 제거해서 넘긴다.
         """
-        print(message, flush=True)
-
         if self.logger is None:
+            print(message, flush=True)
             return
 
         try:
             log_func = getattr(self.logger, level, self.logger.info)
             log_func(str(message).strip())
         except Exception:
-            pass
+            print(message, flush=True)
 
     def close(self):
         """
