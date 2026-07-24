@@ -14,6 +14,9 @@ class mySettings:
             "filename": "ERS.log",
             "level": "DEBUG",
             "consol": False,
+            # "auto": systemd로 실행되면 journald가 보관하므로 파일을 만들지 않고,
+            # 직접 실행하면 파일에 남긴다. true/false로 고정할 수도 있다.
+            "file": "auto",
         },
         "name": "ERS V2 CONTROLLER",
         "version": "20260505",
@@ -129,6 +132,7 @@ class mySettings:
                     "filename": {"type": "string"},
                     "level": {"type": "string"},
                     "consol": {"type": "boolean"},
+                    "file": {"type": ["boolean", "string"]},
                 },
                 "required": ["folder", "filename"],
             },
@@ -306,18 +310,32 @@ class mySettings:
         self.validate(self.schema)
         self.logger = self._logger_init()
 
+    @staticmethod
+    def _use_file_handler(setting):
+        """
+        파일 로그를 남길지 결정한다.
+
+        "auto"이면 실행 방식으로 판단한다. systemd는 유닛의 stdout을
+        journald에 연결할 때 JOURNAL_STREAM을 설정하므로, 그 경우
+        journald가 이미 로그를 보관한다고 보고 파일을 만들지 않는다.
+        터미널에서 직접 실행하면 남는 곳이 없으므로 파일에 기록한다.
+        """
+        if isinstance(setting, str) and setting.strip().lower() == "auto":
+            return "JOURNAL_STREAM" not in os.environ
+
+        return bool(setting)
+
     def _logger_init(self):
-        logger_folder = self.settings.get("logger", {}).get("folder", "./log")
-        logger_filename = self.settings.get("logger", {}).get("filename", "app.log")
-        logger_level = self.settings.get("logger", {}).get("level", "DEBUG")
-        logger_consol = self.settings.get("logger", {}).get(
+        logger_conf = self.settings.get("logger", {})
+
+        logger_folder = logger_conf.get("folder", "./log")
+        logger_filename = logger_conf.get("filename", "app.log")
+        logger_level = logger_conf.get("level", "DEBUG")
+        logger_consol = logger_conf.get(
             "consol",
-            self.settings.get("logger", {}).get("console", False),
+            logger_conf.get("console", False),
         )
-
-        os.makedirs(logger_folder, exist_ok=True)
-
-        logger_path = os.path.join(logger_folder, logger_filename)
+        logger_file = self._use_file_handler(logger_conf.get("file", "auto"))
 
         log = logging.getLogger("ERS")
         log.handlers.clear()
@@ -331,21 +349,31 @@ class mySettings:
             datefmt="%Y-%m-%d %H:%M:%S",
         )
 
-        file_handler = RotatingFileHandler(
-            logger_path,
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
-            encoding="utf-8",
-        )
-        file_handler.setLevel(level)
-        file_handler.setFormatter(formatter)
-        log.addHandler(file_handler)
+        if logger_file:
+            os.makedirs(logger_folder, exist_ok=True)
+
+            file_handler = RotatingFileHandler(
+                os.path.join(logger_folder, logger_filename),
+                maxBytes=10 * 1024 * 1024,
+                backupCount=5,
+                encoding="utf-8",
+            )
+            file_handler.setLevel(level)
+            file_handler.setFormatter(formatter)
+            log.addHandler(file_handler)
 
         if logger_consol:
             stream_handler = logging.StreamHandler(sys.stdout)
             stream_handler.setLevel(level)
             stream_handler.setFormatter(formatter)
             log.addHandler(stream_handler)
+
+        if not log.handlers:
+            # 파일·콘솔이 모두 꺼져 있으면 로그가 통째로 사라진다.
+            fallback_handler = logging.StreamHandler(sys.stdout)
+            fallback_handler.setLevel(level)
+            fallback_handler.setFormatter(formatter)
+            log.addHandler(fallback_handler)
 
         log.info("Logging started")
 

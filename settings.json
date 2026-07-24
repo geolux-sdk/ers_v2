@@ -3,7 +3,8 @@
         "folder": "./log",
         "filename": "ERS.log",
         "level": "INFO",
-        "console": true
+        "console": true,
+        "file": "auto"
     },
     "name": "ERS V2 CONTROLLER",
     "version": "20260505",
