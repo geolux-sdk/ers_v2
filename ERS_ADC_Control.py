@@ -36,7 +36,8 @@ DEFAULT_BAUDRATE = 115200
 DEFAULT_TIMEOUT = 0.5
 DEFAULT_WRITE_TIMEOUT = 0.5
 
-DEFAULT_LOG_DIR = "./log"
+# ADC 테스트용 CSV 저장 폴더. 로그 폴더와 분리해 둔다.
+DEFAULT_CSV_DIR = "./csv"
 
 # ADC sample binary format:
 # time(2) + fb(2) + values(12 * 4) + ts(4) + null1(4) + null2(4)
@@ -99,7 +100,7 @@ class adc_controller:
         timeout: float = DEFAULT_TIMEOUT,
         write_timeout: float = DEFAULT_WRITE_TIMEOUT,
         save_csv: bool = False,
-        csv_folder: str = DEFAULT_LOG_DIR,
+        csv_folder: str = DEFAULT_CSV_DIR,
         convert: Optional[bool] = None,
         setup_retry_attempts: int = DEFAULT_SETUP_RETRY_ATTEMPTS,
         setup_retry_delay_sec: float = DEFAULT_SETUP_RETRY_DELAY_SEC,
@@ -617,6 +618,10 @@ class adc_controller:
         elif self.save_csv:
             csv_file = self.make_csv_output_file(output_file)
             try:
+                csv_dir = os.path.dirname(os.path.abspath(csv_file))
+                if csv_dir:
+                    os.makedirs(csv_dir, exist_ok=True)
+
                 row_count = write_legacy_payload_csv(parsed_data, csv_file)
                 self.logger.info(
                     "ADC CSV saved: %s, rows=%d",

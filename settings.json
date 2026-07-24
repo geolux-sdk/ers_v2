@@ -50,7 +50,7 @@
         "baudrate": 115200,
         "sample_rate": 2400,
         "save_csv": false,
-        "csv_folder": "./log"
+        "csv_folder": "./csv"
     },
     "udp": {
         "send_addr": "127.0.0.1",
