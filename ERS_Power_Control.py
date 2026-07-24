@@ -240,6 +240,8 @@ class power_controller:
             if auto_start:
                 self.start()
 
+            op_voltage = None
+
             for _ in range(10):
                 try:
                     time.sleep(2.0)
@@ -268,9 +270,12 @@ class power_controller:
             if auto_start:
                 self.stop()
 
-            self.logger.error("Target voltage setting failed")
-            return True
-
+            self.logger.error(
+                "Target voltage setting failed: target=%s V, last measured=%s V",
+                voltage,
+                op_voltage,
+            )
+            return False
 
         except Exception as err:
             self.logger.exception("Error during set_target: %r", err)
