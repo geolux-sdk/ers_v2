@@ -9,6 +9,7 @@ pyserial만 사용한다. Python 3.9 호환.
     python3 dsp_modbus_test.py set 24 0.5 0.75 30   # FC10: 전압 V, 전류 A, OC A, 제한시간 s
     python3 dsp_modbus_test.py run                  # FC06 주소7 = 1
     python3 dsp_modbus_test.py stop                 # FC06 주소7 = 0
+    python3 dsp_modbus_test.py reset                # FC06 주소8 = 1, TRIP 해제 (펌웨어 반영 후)
     python3 dsp_modbus_test.py raw "04 00 00 00 10" # 주소와 CRC 를 붙여 그대로 전송
     python3 dsp_modbus_test.py selftest             # 장치 없이 CRC/인코딩 확인
 
@@ -154,6 +155,10 @@ class DspClient:
     def command(self, value):
         self.exchange([6, 0, 7, 0, value])
 
+    def trip_reset(self):
+        """FC06 주소 8 = 1. 펌웨어에 TRIP 해제 레지스터가 추가된 뒤에만 동작(이전 펌웨어는 예외 02)."""
+        self.exchange([6, 0, 8, 0, 1])
+
 
 # ---------------------------------------------------------------------------
 # 인코딩 / 디코딩
@@ -251,6 +256,15 @@ def cmd_stop(client, args):
     print_measurements(client.read_measurements())
 
 
+def cmd_reset(client, args):
+    print("[FC04 해제 전 상태]")
+    print_measurements(client.read_measurements())
+    print("[FC06 TRIP 해제]")
+    client.trip_reset()
+    print("[FC04 해제 후 상태]")
+    print_measurements(client.read_measurements())
+
+
 def cmd_raw(client, args):
     pdu = list(bytes.fromhex(args.hex))
     print("[RAW] PDU {}".format(hexs(pdu)))
@@ -268,6 +282,7 @@ def cmd_selftest(args):
         ("RUN", "01 06 00 07 00 01", "F9 CB"),
         ("STOP", "01 06 00 07 00 00", "38 0B"),
         ("exc 04", "01 90 04", "4D C3"),
+        ("TRIP reset", "01 06 00 08 00 01", "C9 C8"),
     ]
     ok = True
     for name, body, want in cases:
@@ -308,6 +323,7 @@ def parse_args():
     s.add_argument("seconds", type=int, help="운전 제한 시간 s (1~9999)")
     sub.add_parser("run", help="FC06 RUN")
     sub.add_parser("stop", help="FC06 STOP")
+    sub.add_parser("reset", help="FC06 주소8 TRIP 해제 (펌웨어 반영 후)")
     r = sub.add_parser("raw", help="PDU 직접 전송 (주소와 CRC 자동)")
     r.add_argument("hex", help='예: "04 00 00 00 10"')
     sub.add_parser("selftest", help="장치 없이 CRC/인코딩 확인")
@@ -320,7 +336,7 @@ def main():
         return cmd_selftest(args)
 
     handlers = {"read": cmd_read, "watch": cmd_watch, "set": cmd_set,
-                "run": cmd_run, "stop": cmd_stop, "raw": cmd_raw}
+                "run": cmd_run, "stop": cmd_stop, "reset": cmd_reset, "raw": cmd_raw}
     try:
         client = DspClient(args.port, args.addr, verbose=not args.quiet)
     except Exception as err:
