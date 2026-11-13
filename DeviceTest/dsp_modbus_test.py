@@ -9,7 +9,7 @@ pyserial만 사용한다. Python 3.9 호환.
     python3 dsp_modbus_test.py set 24 0.5 0.75 30   # FC10: 전압 V, 전류 A, OC A, 제한시간 s
     python3 dsp_modbus_test.py run                  # FC06 주소7 = 1
     python3 dsp_modbus_test.py stop                 # FC06 주소7 = 0
-    python3 dsp_modbus_test.py reset                # FC06 주소8 = 1, TRIP 해제 (펌웨어 반영 후)
+    python3 dsp_modbus_test.py reset                # FC06 주소8 = 1, TRIP 해제
     python3 dsp_modbus_test.py raw "04 00 00 00 10" # 주소와 CRC 를 붙여 그대로 전송
     python3 dsp_modbus_test.py selftest             # 장치 없이 CRC/인코딩 확인
 
@@ -323,7 +323,7 @@ def parse_args():
     s.add_argument("seconds", type=int, help="운전 제한 시간 s (1~9999)")
     sub.add_parser("run", help="FC06 RUN")
     sub.add_parser("stop", help="FC06 STOP")
-    sub.add_parser("reset", help="FC06 주소8 TRIP 해제 (펌웨어 반영 후)")
+    sub.add_parser("reset", help="FC06 주소8 TRIP 해제")
     r = sub.add_parser("raw", help="PDU 직접 전송 (주소와 CRC 자동)")
     r.add_argument("hex", help='예: "04 00 00 00 10"')
     sub.add_parser("selftest", help="장치 없이 CRC/인코딩 확인")
