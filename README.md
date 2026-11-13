@@ -16,6 +16,9 @@ systemd -> ERS_Main.py
 
 ### Raspberry Pi 부팅 설정
 
+> **2027Version 하드웨어**는 핀 구성이 다르다(GPIO21 POWER_HOLD, 22 릴레이, 23 ADC_RESET, 24 TEST).
+> [docs/pi-setup-2027.md](docs/pi-setup-2027.md)를 따른다. 아래 내용은 기존(v2) 하드웨어 기준이다.
+
 ERS에서 사용하는 UART와 GPIO 초기 상태를 사용하려면 Raspberry Pi의 부팅 설정 파일에 아래 내용을 미리 추가해야 합니다.
 
 일반 Raspberry Pi OS에서는 아래 파일을 수정합니다.
