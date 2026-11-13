@@ -15,6 +15,11 @@ ERS_Main 흐름은 가짜 장치로 만든 테스트(`DeviceTest/test_main_flow.
 
 준비: ADC(`/dev/ttyACM0`), 릴레이(`/dev/ttyUSB0`) 연결, POWER 보드 출력 가능 상태, 부하(전극 또는 더미 저항).
 
+- [ ] **ADC 연결 (먼저)** — 2026-11-13 ADC를 연결했으나 Pi에 USB 장치로 전혀 인식되지 않음
+  (커널 로그에 연결 기록 없음, ADC_RESET 펄스에도 변화 없음). 원인: **USB 케이블 제작 불량**.
+  케이블 재제작 후 ① `lsusb`·`/dev/ttyACM0` 인식 ② `ERS_ADC_Comm_Test.py`로 측정 1회
+  ③ `DeviceTest/GPIOPortTest.py adc-reset` 후 ADC 재시작·USB 재인식 확인
+
 - [ ] **잡 전체 흐름** — `DCSTART` → `DCSTARTOK` → 측정 → `DCDONE`. 저장된 `.dat` 파일 확인
 - [ ] **TESTEL / TESTADC** — 30V 고정으로 동작하는지, TESTADC에서 TEST 모드(GPIO24) 켜고 끄는지
 - [ ] **출력 전압 도달 판정** — 기준: 2초 안에 ±max(1V, 2%).
