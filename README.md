@@ -2,6 +2,15 @@
 
 이 프로젝트는 Raspberry Pi에서 Python 3.9.2로 실행되는 ERS V2 Controller입니다.
 
+> **2027Version 브랜치 문서**
+>
+> | 문서 | 내용 |
+> | --- | --- |
+> | [docs/pi-setup-2027.md](docs/pi-setup-2027.md) | Pi 설정 (GPIO, 전원 유지, 서비스) |
+> | [docs/power-board-dsp-modbus.md](docs/power-board-dsp-modbus.md) | 새 POWER 보드 Modbus 규격과 결정 사항 |
+> | [docs/host-changes-2027.md](docs/host-changes-2027.md) | HOST(cRho)가 고쳐야 할 일 |
+> | [docs/pending-2027.md](docs/pending-2027.md) | **추후 확인할 사항** |
+
 권장 실행 방식은 `systemd`가 직접 `ERS_Main.py`를 실행하고 재시작을 관리하는 방식입니다.
 
 ## systemd 설치 가이드
