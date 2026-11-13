@@ -1,0 +1,16 @@
+#!/bin/sh
+# ERS 2027Version: POWER_HOLD(GPIO21) 해제.
+#
+# 설치 위치: /usr/lib/systemd/system-shutdown/ers-power-hold-release (root, 0755)
+#   sudo install -m 0755 -o root -g root ers-power-hold-release /usr/lib/systemd/system-shutdown/
+#
+# systemd 가 종료 마지막 단계(파일시스템 정리 후)에 $1 = poweroff|halt|reboot|kexec 로 호출한다.
+# 종료(poweroff/halt)일 때만 GPIO21 을 LOW 로 내려 전원 유지 회로를 놓는다.
+# 재부팅(reboot/kexec)일 때는 건드리지 않는다.
+# GPIO11 의 gpio-poweroff 오버레이는 그대로 두고 함께 동작한다(이 스크립트가 먼저 실행됨).
+case "$1" in
+    poweroff|halt)
+        /usr/bin/raspi-gpio set 21 op dl
+        ;;
+esac
+exit 0
