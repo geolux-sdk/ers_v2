@@ -160,8 +160,9 @@ ERS 코드는 GPIO21을 다음과 같이 다뤄야 한다.
   가장 안전한 방법은 ERS 코드에서 GPIO21을 아예 `setup()`하지 않는 것이다(부팅 설정이 이미 HIGH 출력으로 잡아 둠).
 - 장비를 끄려면 GPIO를 직접 조작하지 말고 `sudo shutdown -h now`를 쓴다.
 
-기존 [pi_gpio.py](../pi_gpio.py)는 종료할 때 관리하는 모든 출력을 LOW로 만든다.
-2027Version에서는 핀 목록이 바뀌므로(20/24/45 → 21/22/23/24), 이 동작을 그대로 쓰면 안 된다.
+[pi_gpio.py](../pi_gpio.py)는 2027Version 핀(22/23/24)만 다룬다. GPIO21은 목록에 없다.
+초기화할 때 `initial=`로 레벨을 지정해 출력 전환 순간의 LOW 글리치(ADC 리셋)를 막고,
+종료할 때는 22·24 LOW, 23 HIGH로 되돌린다. `GPIO.cleanup()`은 호출하지 않는다.
 
 ---
 
@@ -203,6 +204,7 @@ sudo systemctl enable --now ers-v2
 |---|---|---|
 | `uart_send_test.py` | 시리얼 포트 송신 / 수신 확인 (기본 9600 8N1) | `python3 uart_send_test.py`, `python3 uart_send_test.py --listen` |
 | `dsp_modbus_test.py` | POWER 보드 Modbus 통신 (9600 8E1) | `python3 dsp_modbus_test.py read`, `... selftest` |
+| `test_power_control.py`, `test_main_flow.py` | 장치 없이 도는 단위·흐름 테스트 | 저장소 루트에서 `python3 -m unittest discover -s DeviceTest` |
 
 GPIO는 별도 스크립트 없이 `raspi-gpio`로 확인한다.
 ```bash

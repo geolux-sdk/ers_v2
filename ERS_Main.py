@@ -8,7 +8,16 @@ from ERS_ADC_Control import (
     DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC,
     adc_controller,
 )
-from ERS_Power_Control import power_controller
+from ERS_Power_Control import (
+    PowerCommError,
+    PowerError,
+    PowerRejectedError,
+    PowerSetupError,
+    PowerStoppedError,
+    PowerTripError,
+    power_controller,
+)
+from dsp_modbus import STATE_TRIP
 from ERS_Relay_Control import relay_board_controller
 from mySettings import mySettings
 from myUDP import myUDP
@@ -17,6 +26,29 @@ from pi_gpio import GPIOController
 
 # 릴레이 보드에 전원을 넣은 뒤 보드가 안정될 때까지의 고정 대기
 RELAY_POWER_SETTLE_SEC = 2.0
+
+# 측정 루프 타이밍 (운전 제한 시간 계산에도 사용)
+RELAY_SWITCH_SETTLE_SEC = 1.0
+ADC_CAPTURE_ATTEMPTS = 3
+ADC_CAPTURE_RETRY_DELAY_SEC = 1.0
+# ADC 포트 열기·닫기, 파일 저장 등 측정 대기 외 명령당 부가 시간(여유값)
+ADC_CAPTURE_OVERHEAD_SEC = 2.0
+
+
+def power_fault_message(err):
+    """전원 예외를 HOST 로 보낼 오류 메시지로 바꾼다. 모두 FAULT 로 처리된다."""
+    if isinstance(err, PowerTripError):
+        m = err.measurements
+        return f"POWER TRIP: cause={m.trip_name} peak={m.peak:.3f}A"
+    if isinstance(err, PowerCommError):
+        return "POWER COMM FAIL"
+    if isinstance(err, PowerStoppedError):
+        return "POWER STOPPED UNEXPECTEDLY"
+    if isinstance(err, PowerRejectedError):
+        return "POWER REJECTED"
+    if isinstance(err, PowerSetupError):
+        return "POWER SETUP FAIL"
+    return "POWER ERROR"
 
 
 class ERSMainApp:
@@ -34,6 +66,7 @@ class ERSMainApp:
         self.job = None
         self.mode = ""
         self.fault_message = ""
+        self._reset_running = False
 
         self.device_state = "INIT"
         self.stop_event = asyncio.Event()
@@ -84,19 +117,7 @@ class ERSMainApp:
 
         self.console(f">> RELAY OPENED {relay_flag}")
 
-        try:
-            self.power = power_controller(
-                **self.config.settings["power"],
-                logger=self.logger,
-            )
-
-            power_flag = self.power.set_init_values()
-            self.power.adjust_current_offset()
-
-        except Exception as err:
-            self.console(f">> Power init error: {repr(err)}", level="error")
-            power_flag = False
-
+        power_flag = self.check_power()
         self.console(f">> POWER OPENED {power_flag}")
 
         self.jobpath = self.config.settings["main"]["job_path"]
@@ -109,17 +130,7 @@ class ERSMainApp:
             )
             return
 
-        # 시리얼 장치 노드 존재 확인.
-        # USB 미연결이나 어댑터 미인식이면 노드 자체가 없으므로,
-        # 잡을 받기 전에 FAULT로 만든다. (통신 확인은 하지 않는다)
-        missing_devices = []
-        for name, device in (
-            ("ADC", self.config.settings["adc"].get("port")),
-            ("RELAY", self.config.settings["relay"].get("comport")),
-        ):
-            if device and not os.path.exists(device):
-                missing_devices.append(f"{name}={device}")
-
+        missing_devices = self.missing_devices()
         if missing_devices:
             self.set_state("FAULT")
             self.console(
@@ -129,6 +140,42 @@ class ERSMainApp:
             return
 
         self.set_state("READY")
+
+    def check_power(self):
+        """
+        POWER 보드(ESR_DSP) 연결과 상태 확인. 초기화와 RESET 에서 사용한다.
+        TRIP 이면 False (FAULT). TRIP 해제는 RESET 명령에서만 한다.
+        """
+        try:
+            if self.power is None:
+                self.power = power_controller(
+                    **self.config.settings["power"],
+                    logger=self.logger,
+                )
+            self.power.check()
+            return True
+        except PowerTripError as err:
+            self.fault_message = power_fault_message(err)
+            self.console(f">> {self.fault_message}: {err}", level="error")
+        except Exception as err:
+            self.fault_message = "POWER INIT FAIL"
+            self.console(f">> Power init error: {repr(err)}", level="error")
+        return False
+
+    def missing_devices(self):
+        """
+        시리얼 장치 노드 존재 확인.
+        USB 미연결이나 어댑터 미인식이면 노드 자체가 없으므로,
+        잡을 받기 전에 FAULT로 만든다. (통신 확인은 하지 않는다)
+        """
+        missing = []
+        for name, device in (
+            ("ADC", self.config.settings["adc"].get("port")),
+            ("RELAY", self.config.settings["relay"].get("comport")),
+        ):
+            if device and not os.path.exists(device):
+                missing.append(f"{name}={device}")
+        return missing
 
     def console(self, message, level="info"):
         """
@@ -158,19 +205,21 @@ class ERSMainApp:
         초기화 실패로 일부 객체가 없을 수 있으므로 None 체크를 사용한다.
         """
         try:
+            if self.power is not None:
+                try:
+                    self.power.stop()
+                finally:
+                    self.power.close()
+        except Exception as err:
+            self.console(f">> Power close failed: {repr(err)}", level="error")
+
+        try:
             if self.relay is not None and self.relay_power_enabled:
                 relay_clear_ok = self.relay.clear()
                 if not relay_clear_ok:
                     self.console(">> Relay clear during close failed: no response", level="warning")
         except Exception as err:
             self.console(f">> Relay clear during close failed: {repr(err)}", level="warning")
-
-        try:
-            if self.power is not None:
-                self.power.stop()
-                self.power.close()
-        except Exception as err:
-            self.console(f">> Power close failed: {repr(err)}", level="error")
 
         try:
             if self.gpio is not None:
@@ -197,6 +246,7 @@ class ERSMainApp:
             "TESTELSTART": lambda: self.cmdTestStart("TESTEL"),
             "TEST": lambda: self.cmdTestStart("TESTEL"),
             "TESTADCSTART": lambda: self.cmdTestStart("TESTADC"),
+            "RESET": self.handle_reset,
             "QUIT": self.handle_quit,
         }
 
@@ -258,6 +308,57 @@ class ERSMainApp:
         else:
             self.console(f">> QUIT received during {self.device_state}, stopping main loop")
             self.stop_event.set()
+
+    def handle_reset(self):
+        """
+        FAULT 탈출 명령. POWER TRIP 해제와 장치 재확인을 한다.
+        TRIP 은 ERS 가 스스로 해제하지 않는다(같은 조건이면 고전압을 반복 인가하게 됨).
+        HOST(사람)가 원인을 확인하고 RESET 을 보냈을 때만 해제한다.
+        """
+        if self.device_state == "BUSY" or self._reset_running:
+            self.console(f">> RESET rejected in {self.device_state}", level="warning")
+            self.send_msg("RESETFAIL")
+            return
+        self._reset_running = True
+        asyncio.get_running_loop().create_task(self.reset_async())
+
+    async def reset_async(self):
+        try:
+            self.fault_message = ""
+            self.console(f">> RESET start from {self.device_state}")
+
+            if self.power is not None:
+                try:
+                    m = await asyncio.to_thread(self.power.read)
+                    if m.state == STATE_TRIP:
+                        # trip_reset() 이 해제 전 상태(원인, 최대 전류)를 로그로 남긴다.
+                        await asyncio.to_thread(self.power.trip_reset)
+                        self.console(f">> POWER TRIP cleared (was {m.trip_name})", level="warning")
+                except Exception as err:
+                    self.fault_message = (
+                        power_fault_message(err) if isinstance(err, PowerError) else "POWER RESET FAIL"
+                    )
+                    self.console(f">> RESET power error: {repr(err)}", level="error")
+
+            ok = not self.fault_message and await asyncio.to_thread(self.check_power)
+
+            missing = self.missing_devices() if ok else []
+            if missing:
+                ok = False
+                self.fault_message = "DEVICE NOT FOUND: " + ", ".join(missing)
+
+            if ok:
+                self.set_state("READY")
+                self.send_msg("RESETOK")
+                self.console(">> RESET OK")
+            else:
+                self.set_state("FAULT")
+                self.send_msg("RESETFAIL")
+                if self.fault_message:
+                    self.send_msg(self.fault_message)
+                self.console(f">> RESET FAIL: {self.fault_message}", level="error")
+        finally:
+            self._reset_running = False
 
     def set_jobpath(self, path):
         self.console(f">> Set Job path={path}")
@@ -628,10 +729,8 @@ class ERSMainApp:
                 f"wait={expected_adc_wait_sec:.2f}s"
             )
 
-            power_param = {
-                "voltage": job["MaxVval"],
-                "current": job["MaxIval"],
-            }
+            power_voltage = job["MaxVval"]
+            power_current_ma = job["MaxIval"]
 
             do_electrode_test = job.get("DoElectrodeTest", False)
             do_adc_test = job.get("DoADCTest", False)
@@ -639,17 +738,47 @@ class ERSMainApp:
             if do_electrode_test:
                 worklist = job["TestCmds"]
                 self.console(f">> TestCmds START {worklist}")
-                power_param["voltage"] = 30
+                power_voltage = self.power.test_voltage_v
 
             elif do_adc_test:
                 worklist = job["TestADCCmds"]
                 self.console(f">> TestADCCmds START {worklist}")
-
-                power_param["voltage"] = 30
+                power_voltage = self.power.test_voltage_v
 
             else:
                 worklist = job["Cmds"]
                 self.console(f">> Cmds START {worklist}")
+
+            # DSP 운전 제한 시간: 명령 하나가 걸릴 수 있는 최대 시간(ADC 재시도 포함) x 명령 수 x 여유
+            per_command_sec = (
+                RELAY_SWITCH_SETTLE_SEC
+                + ADC_CAPTURE_ATTEMPTS * (expected_adc_wait_sec + ADC_CAPTURE_OVERHEAD_SEC)
+                + (ADC_CAPTURE_ATTEMPTS - 1) * ADC_CAPTURE_RETRY_DELAY_SEC
+            )
+            run_seconds = self.power.run_seconds(
+                per_command_sec,
+                len(worklist),
+                fixed_sec=self.power.voltage_settle_timeout_sec,
+            )
+            try:
+                power_plan = self.power.plan(power_voltage, power_current_ma, run_seconds)
+            except PowerSetupError as err:
+                self.fault_message = "POWER PARAM INVALID"
+                self.console(f">> {self.fault_message}: {err}", level="error")
+                await self.safe_error_stop_async(job)
+                continue
+
+            self.console(
+                f">> POWER PLAN: {power_plan.voltage}V {power_plan.current}A "
+                f"OC={power_plan.oc}A limit={power_plan.seconds}s "
+                f"(per_command={per_command_sec:.1f}s x {len(worklist)})"
+            )
+            if power_plan.current_clamped:
+                self.console(
+                    f">> POWER CURRENT ADJUSTED: requested={power_plan.requested_current_ma}mA "
+                    f"-> {power_plan.current}A",
+                    level="warning",
+                )
 
             try:
                 if self.gpio is None:
@@ -693,50 +822,43 @@ class ERSMainApp:
 
                 self.console(">> TEST MODE ENABLED")
 
+            # 설정(STOP 상태에서만 가능) → RUN(통신 유지 스레드 시작) → 출력 전압 도달 확인
             try:
-                if self.gpio is not None:
-                    self.gpio.enable_booster()
-                    await asyncio.sleep(1)
-            except Exception as err:
-                self.fault_message = "BOOSTER ENABLE FAIL"
-                self.console(f">> {self.fault_message}: {repr(err)}", level="error")
+                await asyncio.to_thread(self.power.configure, power_plan)
+                await asyncio.to_thread(self.power.start)
+                measured = await asyncio.to_thread(self.power.wait_voltage)
+            except PowerError as err:
+                self.fault_message = power_fault_message(err)
+                self.console(f">> {self.fault_message}: {err}", level="error")
                 await self.safe_error_stop_async(job)
                 continue
-
-            self.console(">> BOOSTER ENABLED")
-
-            try:
-                power_setup_result = await asyncio.to_thread(
-                    self.power.set_target,
-                    **power_param,
-                )
             except Exception as err:
                 self.fault_message = "POWER SETUP EXCEPTION"
                 self.console(f">> {self.fault_message}: {repr(err)}", level="error")
                 await self.safe_error_stop_async(job)
                 continue
 
-            if not power_setup_result:
-                self.fault_message = "POWER SETUP FAIL"
-                self.console(f">> {self.fault_message}", level="error")
-                await self.safe_error_stop_async(job)
-                continue
-
-            self.console(
-                f">> POWER SETUP OK: voltage={power_param['voltage']}V, "
-                f"current={power_param['current']}mA"
-            )
+            self.console(f">> POWER RUN OK: {measured.summary()}")
 
             self.console(">> JOB START ------------------------")
 
-            adc_capture_attempts = 3
-            adc_capture_retry_delay_sec = 1.0
+            adc_capture_attempts = ADC_CAPTURE_ATTEMPTS
+            adc_capture_retry_delay_sec = ADC_CAPTURE_RETRY_DELAY_SEC
 
             for idx, work in enumerate(worklist, start=1):
                 if self.process_stop_event.is_set():
                     self.process_stop_event.clear()
                     self.fault_message = "CANCEL BY USER"
                     self.console(f">> {self.fault_message}", level="warning")
+                    await self.safe_error_stop_async(job)
+                    break
+
+                # 다음 전극으로 넘어가기 전에 전원 상태 확인 (TRIP 이면 릴레이를 바꾸지 않는다)
+                try:
+                    self.power.check_running()
+                except PowerError as err:
+                    self.fault_message = power_fault_message(err)
+                    self.console(f">> {self.fault_message}: {err}", level="error")
                     await self.safe_error_stop_async(job)
                     break
 
@@ -754,7 +876,7 @@ class ERSMainApp:
                     await self.safe_error_stop_async(job)
                     break
 
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(RELAY_SWITCH_SETTLE_SEC)
 
                 if self.process_stop_event.is_set():
                     self.process_stop_event.clear()
@@ -810,16 +932,12 @@ class ERSMainApp:
                             level="warning",
                         )
 
+                    # 통신 유지 스레드가 1초마다 읽어 둔 최신 측정으로 판단한다(장치 접근 없음).
                     try:
-                        power_values = await asyncio.to_thread(
-                            self.power.monitoring_values
-                        )
-                    except Exception as err:
-                        self.fault_message = "POWER MONITORING FAIL"
-                        self.console(
-                            f">> {self.fault_message}: {repr(err)}",
-                            level="error",
-                        )
+                        power_values = self.power.check_running()
+                    except PowerError as err:
+                        self.fault_message = power_fault_message(err)
+                        self.console(f">> {self.fault_message}: {err}", level="error")
                         await self.safe_error_stop_async(job)
                         adc_stop_required = True
                         break
@@ -827,18 +945,8 @@ class ERSMainApp:
                     self.console(
                         f">> Monitoring Power: "
                         f"attempt={attempt}/{adc_capture_attempts}, "
-                        f"values={power_values}"
+                        f"{power_values.summary()}"
                     )
-
-                    if power_values.get("error_status", 0) != 0:
-                        self.fault_message = (
-                            f"POWER ERROR FAIL: "
-                            f"error_status={power_values.get('error_status')}"
-                        )
-                        self.console(f">> {self.fault_message}", level="error")
-                        await self.safe_error_stop_async(job)
-                        adc_stop_required = True
-                        break
 
                     if adc_capture_ok:
                         break
@@ -918,7 +1026,17 @@ class ERSMainApp:
     async def safe_hardware_stop_async(self, job, stop_type):
         """
         Stop shared hardware resources without blocking the asyncio event loop.
+        전원을 먼저 끄고(고전압 차단) 릴레이를 해제한다. 고전압이 걸린 채 릴레이 접점을 바꾸지 않기 위해서다.
         """
+        try:
+            if self.power is not None:
+                await asyncio.to_thread(self.power.stop)
+        except Exception as err:
+            self.console(
+                f">> Power stop failed during {stop_type} stop: {repr(err)}",
+                level="error",
+            )
+
         try:
             if self.relay is not None and self.relay_power_enabled:
                 relay_clear_ok = await asyncio.to_thread(self.relay.clear)
@@ -931,24 +1049,6 @@ class ERSMainApp:
             self.console(
                 f">> Relay clear failed during {stop_type} stop: {repr(err)}",
                 level="warning",
-            )
-
-        try:
-            if self.power is not None:
-                await asyncio.to_thread(self.power.stop)
-        except Exception as err:
-            self.console(
-                f">> Power stop failed during {stop_type} stop: {repr(err)}",
-                level="error",
-            )
-
-        try:
-            if self.gpio is not None:
-                self.gpio.disable_booster()
-        except Exception as err:
-            self.console(
-                f">> Disable booster failed during {stop_type} stop: {repr(err)}",
-                level="error",
             )
 
         if job.get("DoADCTest", False):

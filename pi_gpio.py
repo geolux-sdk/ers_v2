@@ -5,93 +5,76 @@ except (ImportError, RuntimeError):
 
 import logging
 
+# 2027Version 핀 (docs/pi-setup-2027.md 1절). 모두 출력.
+#   GPIO21 POWER_HOLD : 이 모듈은 절대 다루지 않는다. LOW/입력/cleanup 이 되면 보드 전원이 꺼진다.
+#                       부팅 시 config.txt(gpio=21=op,dh)가 HIGH 로 잡고, 종료 시 system-shutdown 훅이 내린다.
+RELAY_PWREN = 22        # HIGH = 릴레이 보드 전원
+ADC_RESET = 23          # LOW = ADC 리셋, 평상시 HIGH
+TEST_MODE_PIN = 24      # HIGH = TEST 모드
+POWER_HOLD = 21         # 참고용 상수. 사용 금지.
 
-TEST_MODE_PIN = 24
-BOOSTER_ENABLE = 20
-RELAY_PWREN = 45
+# 핀별 평상시(안전) 레벨. 초기화와 close() 에서 이 값으로 둔다.
+IDLE_LEVELS = {
+    RELAY_PWREN: False,
+    ADC_RESET: True,
+    TEST_MODE_PIN: False,
+}
 
 
 class GPIOController:
     def __init__(self, logger=None):
         self.logger = logger or logging.getLogger(__name__)
-        self.gpio_test_mode_pin = TEST_MODE_PIN
-        self.booster_enable_pin = BOOSTER_ENABLE
         self.relay_pwren_pin = RELAY_PWREN
-        self.output_pins = [
-            self.gpio_test_mode_pin,
-            self.booster_enable_pin,
-            self.relay_pwren_pin,
-        ]
+        self.adc_reset_pin = ADC_RESET
+        self.gpio_test_mode_pin = TEST_MODE_PIN
+        self.output_pins = list(IDLE_LEVELS)
+        assert POWER_HOLD not in self.output_pins
         try:
             GPIO.setwarnings(False)
             GPIO.setmode(GPIO.BCM)
-            for pin in self.output_pins:
-                GPIO.setup(pin, GPIO.OUT)
-                GPIO.output(pin, GPIO.LOW)
+            for pin, level in IDLE_LEVELS.items():
+                # initial 로 설정해야 출력 전환 순간 LOW 글리치(ADC 리셋)가 생기지 않는다.
+                GPIO.setup(pin, GPIO.OUT, initial=GPIO.HIGH if level else GPIO.LOW)
         except Exception as e:
             self.logger.error(f"Failed to initialize GPIO: {e}")
             raise
 
-    def enable_test_mode(self):
+    def _write(self, pin, level, name):
         try:
-            GPIO.output(self.gpio_test_mode_pin, GPIO.HIGH)
-            self.logger.debug("gpio_test_mode_pin SET")
-            self.logger.info("TEST MODE enabled")
+            GPIO.output(pin, GPIO.HIGH if level else GPIO.LOW)
+            self.logger.info("%s %s", name, "HIGH" if level else "LOW")
         except Exception as e:
-            self.logger.error(f"Failed to enable test mode: {e}")
+            self.logger.error(f"Failed to set {name}: {e}")
             raise
+
+    def enable_test_mode(self):
+        self._write(self.gpio_test_mode_pin, True, "TEST_MODE")
 
     def disable_test_mode(self):
-        try:
-            GPIO.output(self.gpio_test_mode_pin, GPIO.LOW)
-            self.logger.debug("gpio_test_mode_pin CLEAR")
-            self.logger.info("TEST MODE disabled")
-        except Exception as e:
-            self.logger.error(f"Failed to disable test mode: {e}")
-            raise
-
-    def enable_booster(self):
-        try:
-            GPIO.output(self.booster_enable_pin, GPIO.HIGH)
-            self.logger.info("BOOSTER_ENABLE enabled")
-        except Exception as e:
-            self.logger.error(f"Failed to enable BOOSTER_ENABLE: {e}")
-            raise
-
-    def disable_booster(self):
-        try:
-            GPIO.output(self.booster_enable_pin, GPIO.LOW)
-            self.logger.info("BOOSTER_ENABLE disabled")
-        except Exception as e:
-            self.logger.error(f"Failed to disable BOOSTER_ENABLE: {e}")
-            raise
+        self._write(self.gpio_test_mode_pin, False, "TEST_MODE")
 
     def enable_relay_power(self):
-        try:
-            GPIO.output(self.relay_pwren_pin, GPIO.HIGH)
-            self.logger.info("RELAY_PWREN enabled")
-        except Exception as e:
-            self.logger.error(f"Failed to enable RELAY_PWREN: {e}")
-            raise
+        self._write(self.relay_pwren_pin, True, "RELAY_PWREN")
 
     def disable_relay_power(self):
-        try:
-            GPIO.output(self.relay_pwren_pin, GPIO.LOW)
-            self.logger.info("RELAY_PWREN disabled")
-        except Exception as e:
-            self.logger.error(f"Failed to disable RELAY_PWREN: {e}")
-            raise
+        self._write(self.relay_pwren_pin, False, "RELAY_PWREN")
+
+    def assert_adc_reset(self):
+        self._write(self.adc_reset_pin, False, "ADC_RESET(active)")
+
+    def release_adc_reset(self):
+        self._write(self.adc_reset_pin, True, "ADC_RESET(released)")
 
     def disable_all_outputs(self):
         self.disable_test_mode()
-        self.disable_booster()
         self.disable_relay_power()
 
     def close(self):
+        """평상시 레벨로 되돌린다. GPIO.cleanup() 은 호출하지 않는다(핀이 입력으로 바뀜)."""
         try:
-            for pin in self.output_pins:
-                GPIO.output(pin, GPIO.LOW)
-            self.logger.debug("GPIO outputs reset to LOW")
+            for pin, level in IDLE_LEVELS.items():
+                GPIO.output(pin, GPIO.HIGH if level else GPIO.LOW)
+            self.logger.debug("GPIO outputs reset to idle levels")
         except Exception as e:
             self.logger.error(f"Failed to reset GPIO outputs: {e}")
 
@@ -107,10 +90,8 @@ if __name__ == "__main__":
 
     logging.basicConfig(level=logging.DEBUG)
     with GPIOController() as pin:
-        pin.enable_booster()
         pin.enable_relay_power()
         pin.enable_test_mode()
-        time.sleep(100)
+        time.sleep(5)
         pin.disable_test_mode()
         pin.disable_relay_power()
-        pin.disable_booster()

@@ -207,6 +207,7 @@ ERS는 `recv_port`인 `3700`번 포트에서 명령을 수신하고, 응답은 `
 | `TESTELSTART` | `JSON/DCworkControl.json`을 읽고 전극 테스트를 시작합니다. |
 | `TEST` | `TESTELSTART`와 동일하게 동작합니다. |
 | `TESTADCSTART` | `JSON/DCworkControl.json`을 읽고 ADC 테스트를 시작합니다. |
+| `RESET` | (2027Version) FAULT 해제. POWER 보드 TRIP을 해제하고 장치를 다시 확인한 뒤 `READY`로 돌아갑니다. `BUSY`에서는 거부합니다. |
 | `QUIT` | 상태에 따라 현재 작업 중지 또는 프로세스 종료를 수행합니다. |
 
 ### UDP 응답
@@ -242,6 +243,24 @@ TESTADCDONE
 ```
 
 작업 중 오류가 발생하면 `FAIL`을 전송하고 내부 상태를 `FAULT`로 변경합니다. 오류 설명이 있으면 `FAIL` 전송 뒤에 오류 메시지를 추가로 전송합니다.
+
+2027Version의 POWER 관련 오류 메시지 (모두 `FAULT`):
+
+| 메시지 | 의미 |
+| --- | --- |
+| `POWER TRIP: cause=OVER_CURRENT peak=0.812A` | POWER 보드 보호 동작(과전류 등). `RESET`으로만 해제 |
+| `POWER SETUP FAIL` | 설정 확인 불일치 또는 출력 전압이 2초 안에 목표에 도달하지 못함 |
+| `POWER STOPPED UNEXPECTEDLY` | 작업 중 POWER 보드가 스스로 STOP (운전 제한 시간 초과, 10초 무통신) |
+| `POWER COMM FAIL` | POWER 보드 통신 두절 |
+| `POWER REJECTED` | POWER 보드가 현재 상태 때문에 명령을 거부 (로컬 메뉴 사용 중 등) |
+| `POWER PARAM INVALID` | job 파일의 `MaxVval`이 허용 범위(1~300V) 밖 |
+
+`RESET` 명령 응답:
+
+```text
+RESETOK            해제 성공, READY
+RESETFAIL          해제 실패. 이어서 원인 메시지를 보냄 (예: DEVICE NOT FOUND: ADC=/dev/ttyACM0)
+```
 
 `STATUS` 명령에 대한 응답은 현재 상태 문자열입니다.
 
@@ -288,6 +307,9 @@ BUSY -> FAULT
 
 현재 복구 정책은 `FAIL` 또는 `STATUS=FAULT`를 받은 외부 프로그램이 `QUIT`를 보내고, systemd가 `ERS_Main.py`를 재시작해 다시 초기화하는 방식입니다.
 
+2027Version에서는 `RESET`을 쓴다. POWER 보드의 TRIP은 ERS를 재시작해도 남아 있으므로, `QUIT` 재시작만으로는 복구되지 않는다.
+ERS는 TRIP을 스스로 해제하지 않는다. 같은 조건이면 다시 과전류가 나서 고전압을 반복 인가하게 되므로, 사람이 원인을 확인한 뒤 HOST가 `RESET`을 보내야 한다.
+
 ### Relay serial 통신
 
 릴레이 보드는 `settings.json`의 `relay.comport`에 설정된 `/dev/ttyAMA3` 포트를 사용합니다.
@@ -306,20 +328,33 @@ ERS는 작업 파일을 읽을 때 각 command row의 길이가 `work_order` 길
 
 ### Power serial 통신
 
-전원 컨트롤러는 Modbus RTU 방식으로 `/dev/ttyAMA2` 포트를 사용합니다.
+> 2027Version: 새 POWER 보드(ESR_DSP), RS485 Modbus RTU **9600bps 8E1, 주소 1**.
+> 규격·레지스터·결정 사항은 [docs/power-board-dsp-modbus.md](docs/power-board-dsp-modbus.md) (특히 10.1절).
 
 ```json
 "power": {
     "comport": "/dev/ttyAMA2",
-    "baudrate": 115200,
-    "timeout": 0.5,
-    "device_id": 241
+    "address": 1,
+    "max_current_a": 1.0,
+    "oc_ratio": 1.5,
+    "oc_max_a": 1.5,
+    "voltage_settle_timeout_sec": 2.0,
+    "test_voltage_v": 30.0,
+    "run_time_margin_ratio": 1.5
 }
 ```
+(전체 키는 `settings.json` 참고)
 
-프로그램 시작 시 holding register 초기값을 설정하고 전류 offset 보정을 수행합니다. 작업 시작 시 job 파일의 `MaxVval`, `MaxIval` 값을 사용해 목표 전압과 전류를 설정합니다.
+작업 흐름:
 
-작업 중 전원 모니터링 값의 `error_status`가 0이 아니면 작업 실패로 처리하고 `FAIL`을 전송합니다.
+1. 프로그램 시작 시 POWER 보드 상태를 읽는다. TRIP이면 `FAULT`.
+2. 작업 시작 시 job의 `MaxVval`(V), `MaxIval`(mA)로 지령을 만든다.
+   전류는 A로 바꾸고 1A를 넘으면 1A로 자른다. OC 임계값 = 전류 × 1.5 (0.3~1.5A).
+   운전 제한 시간은 명령 수와 ADC 측정 시간으로 계산한다. TESTEL/TESTADC는 30V.
+3. 설정 쓰기 → 확인 → RUN → 출력 전압이 2초 안에 ±max(1V, 2%)에 들어오는지 확인.
+4. RUN 중에는 별도 스레드가 1초마다 상태를 읽는다(POWER 보드는 10초 무통신이면 스스로 STOP).
+   매 전극과 매 ADC 측정 후 TRIP·예상치 못한 STOP·통신 두절을 확인한다.
+5. 끝나거나 오류가 나면 **POWER STOP을 먼저** 하고 릴레이를 해제한다.
 
 ### ADC serial 통신
 
@@ -355,13 +390,17 @@ ComfilePi IO26-2 GPIO 핀맵은 아래 이미지를 참고합니다.
 
 GPIO 출력은 BCM 번호 기준으로 사용합니다.
 
+2027Version ([docs/pi-setup-2027.md](docs/pi-setup-2027.md)):
+
 ```text
-GPIO20 -> BOOSTER_ENABLE
-GPIO24 -> TEST_MODE
-GPIO45 -> RELAY_PWREN
+GPIO21 -> POWER_HOLD   (ERS 코드는 다루지 않음. LOW가 되면 보드 전원이 꺼짐)
+GPIO22 -> RELAY_PWREN  (평상시 LOW)
+GPIO23 -> ADC_RESET    (LOW = 리셋, 평상시 HIGH)
+GPIO24 -> TEST_MODE    (평상시 LOW)
 ```
 
-초기화 시 세 핀은 모두 출력으로 설정하고 LOW 상태로 둡니다.
+초기화와 종료 시 22·24는 LOW, 23은 HIGH로 둔다. `GPIO.cleanup()`은 호출하지 않는다.
+부스터(기존 GPIO20)는 새 하드웨어에 없어 제거했다.
 
 ```text
 BOOSTER_ENABLE HIGH -> booster enabled

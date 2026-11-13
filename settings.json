@@ -60,44 +60,20 @@
     },
     "power": {
         "comport": "/dev/ttyAMA2",
-        "baudrate": 115200,
-        "timeout": 0.5,
-        "device_id": 241,
-        "init_values": {
-            "control_start_stop": 0,
-            "target_voltage": 30,
-            "target_load_current": 100,
-            "input_voltage_gain": 150,
-            "input_voltage_offset": 0,
-            "load_voltage_gain": 150,
-            "load_voltage_offset": 0,
-            "load_current_gain": 1300,
-            "load_current_offset": 6,
-            "overvoltage_threshold": 350,
-            "overcurrent_threshold": 1200,
-            "soft_start_rate": 1000,
-            "kp_cv": 0.03,
-            "ki_cv": 0.01,
-            "kd_cv": 0,
-            "kp_cc": 0.35,
-            "ki_cc": 0.001,
-            "kd_cc": 0
-        },
-        "gain_profiles": [
-            {
-                "max_voltage": 40,
-                "kp_cv": 0.02,
-                "ki_cv": 0.006,
-                "kp_cc": 0.31,
-                "ki_cc": 0.003
-            },
-            {
-                "max_voltage": 400,
-                "kp_cv": 0.03,
-                "ki_cv": 0.01,
-                "kp_cc": 0.35,
-                "ki_cc": 0.001
-            }
-        ]
+        "address": 1,
+        "min_voltage_v": 1.0,
+        "max_voltage_v": 300.0,
+        "min_current_a": 0.1,
+        "max_current_a": 1.0,
+        "oc_ratio": 1.5,
+        "oc_min_a": 0.3,
+        "oc_max_a": 1.5,
+        "voltage_tolerance_v": 1.0,
+        "voltage_tolerance_pct": 2.0,
+        "voltage_settle_timeout_sec": 2.0,
+        "keepalive_interval_sec": 1.0,
+        "keepalive_fail_limit": 3,
+        "test_voltage_v": 30.0,
+        "run_time_margin_ratio": 1.5
     }
 }

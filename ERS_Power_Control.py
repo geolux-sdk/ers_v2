@@ -96,6 +96,7 @@ class power_controller:
         keepalive_interval_sec: float = 1.0,
         keepalive_fail_limit: int = 3,
         test_voltage_v: float = 30.0,
+        run_time_margin_ratio: float = 1.5,
         logger: Optional[logging.Logger] = None,
     ):
         self.logger = logger or logging.getLogger(__name__)
@@ -113,6 +114,7 @@ class power_controller:
         self.keepalive_interval_sec = keepalive_interval_sec
         self.keepalive_fail_limit = keepalive_fail_limit
         self.test_voltage_v = test_voltage_v
+        self.run_time_margin_ratio = run_time_margin_ratio
 
         self.plan_active: Optional[PowerPlan] = None
         self._keepalive_thread: Optional[threading.Thread] = None
@@ -183,6 +185,11 @@ class power_controller:
         oc = min(max(current * self.oc_ratio, self.oc_min_a), self.oc_max_a)
         secs = int(min(max(round(seconds), 1), MAX_RUN_SECONDS))
         return PowerPlan(voltage, round(current, 4), round(oc, 4), secs, requested, clamped)
+
+    def run_seconds(self, per_command_sec: float, command_count: int, fixed_sec: float = 0.0) -> int:
+        """운전 제한 시간 = (명령당 최대 시간 x 명령 수 + 고정 시간) x 여유 배율, 1~9999초."""
+        total = (per_command_sec * command_count + fixed_sec) * self.run_time_margin_ratio
+        return int(min(max(round(total), 1), MAX_RUN_SECONDS))
 
     def voltage_tolerance(self, target: float) -> float:
         return max(self.voltage_tolerance_v, abs(target) * self.voltage_tolerance_pct / 100.0)

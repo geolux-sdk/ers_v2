@@ -1,4 +1,4 @@
-"""장치 없이 도는 POWER 제어 단위 테스트.  실행: python -m unittest discover -s tests"""
+"""장치 없이 도는 POWER 제어 단위 테스트.  실행: python -m unittest discover -s DeviceTest"""
 import os
 import struct
 import sys
@@ -90,6 +90,18 @@ class PlanTests(unittest.TestCase):
         p = make_power(max_current_a=2.0, oc_max_a=3.0)
         plan = p.plan(20, 2000, 60)
         self.assertEqual((plan.current, plan.oc, plan.current_clamped), (2.0, 3.0, False))
+
+    def test_run_seconds(self):
+        self.assertEqual(self.p.run_seconds(10.0, 20, fixed_sec=5.0), 308)   # (200+5)*1.5
+        self.assertEqual(self.p.run_seconds(100.0, 1000), 9999)
+        self.assertEqual(self.p.run_seconds(0.0, 0), 1)
+
+    def test_settings_json_keys_match_constructor(self):
+        import json
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "settings.json"), encoding="utf-8") as f:
+            power = json.load(f)["power"]
+        make_power(**power)   # 알 수 없는 키가 있으면 TypeError
 
     def test_voltage_tolerance(self):
         self.assertEqual(self.p.voltage_tolerance(20), 1.0)     # 2% = 0.4 < 1V

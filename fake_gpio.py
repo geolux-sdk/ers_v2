@@ -14,8 +14,8 @@ def setmode(mode):
     print(f"Setting mode to {mode}")
 
 
-def setup(pin, mode):
-    print(f"Setting up pin {pin} to mode {mode}")
+def setup(pin, mode, initial=None):
+    print(f"Setting up pin {pin} to mode {mode} initial={initial}")
 
 
 def output(pin, state):
