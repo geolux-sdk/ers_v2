@@ -196,6 +196,9 @@ class MainFlowTests(unittest.TestCase):
         asyncio.run(scenario())
 
     def make_app(self):
+        # Python 3.9: asyncio.Event() 는 현재 이벤트 루프가 필요하다. 앞선 asyncio.run() 이
+        # 루프를 닫았으므로 새 루프를 지정한다. (실제 프로그램은 앱을 한 번만 만들어 해당 없음)
+        asyncio.set_event_loop(asyncio.new_event_loop())
         app = ERS_Main.ERSMainApp(self.tmp)
         return app
 
