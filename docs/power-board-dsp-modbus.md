@@ -304,8 +304,8 @@ FC06의 정상 응답은 요청과 똑같은 8바이트다.
 | 오류 해제 | 확인 필요 | 설정 주소 8 (2026-11-13 펌웨어 추가) |
 | 라이브러리 | pymodbus (`modbus_master.py`) | pyserial만으로 충분 (참조 클라이언트) |
 
-[ERS_Power_Control.py](../ERS_Power_Control.py)와 [modbus_master.py](../modbus_master.py)는 기존 보드 전용이다.
-레지스터, 스케일, 주소가 모두 달라서 **고치는 것보다 새로 쓰는 편이 낫다.**
+기존 보드용 `modbus_master.py`와 pymodbus 의존성은 2026-11-13에 삭제했다(`main` 브랜치와 git 기록에 남아 있음).
+레지스터, 스케일, 주소가 모두 달라서 `ERS_Power_Control.py`는 `dsp_modbus.py` 위에 새로 작성했다.
 
 ---
 

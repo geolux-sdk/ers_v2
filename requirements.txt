@@ -1,9 +1,8 @@
 # Runtime dependencies for Raspberry Pi Python 3.9.2.
 #
 # Current ERS_Main.py runtime:
-# - pymodbus 3.8.6 is pinned because newer pymodbus releases require Python >= 3.10.
-# - pyserial is also pinned explicitly because ADC and relay modules import serial directly.
-pymodbus[serial]==3.8.6
+# - pyserial: ADC, relay, and the POWER board Modbus RTU client (dsp_modbus.py) use it directly.
+#   pymodbus is no longer needed (2027Version, new POWER board).
 pyserial==3.5
 jsonschema==4.25.1
 RPi.GPIO==0.7.1

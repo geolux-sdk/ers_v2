@@ -1,3 +1,14 @@
+"""[레거시] 기존(v2) 하드웨어용 GPIO / UART 점검 스크립트.
+
+주의 — 2027Version 하드웨어에서는 핀 정의가 맞지 않는다 (docs/pi-setup-2027.md 1절):
+  - GPIO23 은 이제 ADC_RESET 이다. 이 스크립트는 23 을 2초마다 토글하고 끝날 때 LOW 로 두므로
+    ADC 가 반복 리셋된다.
+  - GPIO22 는 이제 릴레이 전원 출력인데, 여기서는 입력으로 읽는다.
+  - GPIO20(부스터), 45(기존 릴레이 전원)는 2027Version 에서 쓰지 않는다.
+  - /dev/ttyAMA2 는 이제 POWER 보드 RS485(9600 8E1)인데, 여기서는 115200 8N1 로 데이터를 보낸다.
+  - GPIO21(POWER_HOLD)은 건드리지 않는다.
+2027Version GPIO 확인은 raspi-gpio 를 쓴다 (docs/pi-setup-2027.md 6절).
+"""
 import time
 import RPi.GPIO as GPIO
 import serial

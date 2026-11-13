@@ -196,6 +196,8 @@ ERS는 `recv_port`인 `3700`번 포트에서 명령을 수신하고, 응답은 `
 
 ### UDP 명령
 
+> 2027Version에서 HOST(cRho)가 고쳐야 할 내용은 [docs/host-changes-2027.md](docs/host-changes-2027.md)에 따로 정리했다.
+
 외부 프로그램이 ERS로 보내는 명령은 문자열입니다.
 
 | 명령 | 동작 |
