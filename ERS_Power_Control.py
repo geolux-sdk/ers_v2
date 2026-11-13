@@ -1,679 +1,399 @@
+"""ERS 2027Version POWER 보드(ESR_DSP) 제어.
+
+통신은 dsp_modbus.py, 규격과 결정 사항은 docs/power-board-dsp-modbus.md (6절, 10.1절).
+
+사용 순서 (잡 하나):
+    plan = power.plan(voltage_v, current_ma, seconds)   # 지령 계산 (전류 1A 클램프, OC = 전류 x 1.5)
+    power.configure(plan)                               # STOP 상태에서 FC10 쓰기 + FC03 확인
+    power.start()                                       # RUN + 통신 유지 스레드 시작
+    power.wait_voltage()                                # 출력 전압 도달 확인 (기본 2초)
+    ... 측정 중 power.check_running() 으로 TRIP / 예상치 못한 STOP / 통신 두절 확인 ...
+    power.stop()
+
+오류 분류:
+    PowerTripError     TRIP(과전류 등). 장비 이상 → FAULT. 자동 해제 금지, HOST RESET 으로만 trip_reset().
+    PowerCommError     통신 두절(연속 실패). → FAULT.
+    PowerStoppedError  RUN 중 DSP 가 스스로 STOP(제한 시간, 10초 무통신). 장비 정상 → 잡 실패, READY.
+    PowerRejectedError DSP 가 상태 때문에 거부(예외 04). 자동 재시도 금지.
+    PowerSetupError    설정 확인 불일치, 전압 미도달, 지령 범위 오류. → 잡 실패.
+"""
+
 import argparse
 import logging
+import threading
 import time
+from dataclasses import dataclass
 from typing import Optional
 
-import modbus_master
+from dsp_modbus import (
+    STATE_RUN,
+    STATE_STOP,
+    STATE_TRIP,
+    DspCommError,
+    DspException,
+    DspModbusClient,
+    Measurements,
+)
+
+MAX_RUN_SECONDS = 9999
+
+
+class PowerError(Exception):
+    pass
+
+
+class PowerCommError(PowerError):
+    pass
+
+
+class PowerTripError(PowerError):
+    def __init__(self, measurements):
+        self.measurements = measurements
+        super().__init__("POWER TRIP: cause={} peak={:.4f}A ({})".format(
+            measurements.trip_name, measurements.peak, measurements.summary()))
+
+
+class PowerStoppedError(PowerError):
+    def __init__(self, measurements):
+        self.measurements = measurements
+        super().__init__("POWER stopped unexpectedly: {}".format(measurements.summary()))
+
+
+class PowerRejectedError(PowerError):
+    pass
+
+
+class PowerSetupError(PowerError):
+    pass
+
+
+@dataclass(frozen=True)
+class PowerPlan:
+    voltage: float           # V
+    current: float           # A (클램프 후)
+    oc: float                # A
+    seconds: int             # 운전 제한 시간
+    requested_current_ma: float
+    current_clamped: bool
 
 
 class power_controller:
-    """
-    ERS Power Controller wrapper.
-
-    이 클래스는 modbus_master.ModbusService를 사용한다.
-    따라서 device_id, register word count, float32 encode/decode,
-    busy retry 처리는 modbus_master.py 쪽 로직을 그대로 사용한다.
-    """
-
     def __init__(
         self,
-        comport: str = modbus_master.DEFAULT_PORT,
-        baudrate: int = modbus_master.DEFAULT_BAUDRATE,
-        timeout: float = modbus_master.DEFAULT_TIMEOUT,
-        device_id: int = modbus_master.DEFAULT_DEVICE_ID,
-        init_values: Optional[dict] = None,
-        gain_profiles: Optional[list] = None,
+        comport: str = "/dev/ttyAMA2",
+        address: int = 1,
+        min_voltage_v: float = 1.0,
+        max_voltage_v: float = 300.0,
+        min_current_a: float = 0.1,
+        max_current_a: float = 1.0,
+        oc_ratio: float = 1.5,
+        oc_min_a: float = 0.3,
+        oc_max_a: float = 1.5,
+        voltage_tolerance_v: float = 1.0,
+        voltage_tolerance_pct: float = 2.0,
+        voltage_settle_timeout_sec: float = 2.0,
+        voltage_poll_interval_sec: float = 0.2,
+        keepalive_interval_sec: float = 1.0,
+        keepalive_fail_limit: int = 3,
+        test_voltage_v: float = 30.0,
         logger: Optional[logging.Logger] = None,
-        auto_connect: bool = True,
     ):
-        self.comport = comport
-        self.baudrate = baudrate
-        self.timeout = timeout
-        self.device_id = device_id
-        self.init_values = init_values
-
-        # max_voltage 오름차순으로 정렬해서 보관한다.
-        # _select_gains()가 첫 번째로 매칭되는 프로파일을 사용하므로
-        # 설정 파일에 적힌 순서와 무관하게 낮은 구간이 먼저 검사된다.
-        self.gain_profiles = sorted(
-            gain_profiles or [],
-            key=lambda profile: profile["max_voltage"],
-        )
-
         self.logger = logger or logging.getLogger(__name__)
+        self.min_voltage_v = min_voltage_v
+        self.max_voltage_v = max_voltage_v
+        self.min_current_a = min_current_a
+        self.max_current_a = max_current_a
+        self.oc_ratio = oc_ratio
+        self.oc_min_a = oc_min_a
+        self.oc_max_a = oc_max_a
+        self.voltage_tolerance_v = voltage_tolerance_v
+        self.voltage_tolerance_pct = voltage_tolerance_pct
+        self.voltage_settle_timeout_sec = voltage_settle_timeout_sec
+        self.voltage_poll_interval_sec = voltage_poll_interval_sec
+        self.keepalive_interval_sec = keepalive_interval_sec
+        self.keepalive_fail_limit = keepalive_fail_limit
+        self.test_voltage_v = test_voltage_v
 
-        self.settings = modbus_master.ModbusConnectionSettings(
-            port=self.comport,
-            baudrate=self.baudrate,
-            timeout=self.timeout,
-            device_id=self.device_id,
-        )
+        self.plan_active: Optional[PowerPlan] = None
+        self._keepalive_thread: Optional[threading.Thread] = None
+        self._keepalive_stop = threading.Event()
+        self._state_lock = threading.Lock()
+        self._latest: Optional[Measurements] = None
+        self._keepalive_failures = 0
+        self._keepalive_error: Optional[str] = None
 
-        self.service = modbus_master.ModbusService(self.settings)
+        self.client = DspModbusClient(comport, address, logger=self.logger)
 
-        if auto_connect:
-            self.connect()
+    # ------------------------------------------------------------------
+    # 기본
+    # ------------------------------------------------------------------
 
-    def connect(self) -> None:
-        self.logger.info(
-            "Connecting Modbus RTU: port=%s, baudrate=%s, timeout=%s, device_id=0x%02X",
-            self.comport,
-            self.baudrate,
-            self.timeout,
-            self.device_id,
-        )
-        self.service.connect()
-        self.logger.info("Modbus connected")
+    def close(self):
+        self._stop_keepalive()
+        self.client.close()
 
-    def close(self) -> None:
-        if self.service:
-            self.service.close()
-            self.logger.info("Modbus connection closed")
-
-    def set_init_values(self, values: Optional[dict] = None) -> bool:
-        """
-        Holding register 초기화.
-        values가 None이면 생성자에서 받은 init_values를 사용한다.
-        최종 values는 모든 holding register 키를 포함해야 한다.
-        """
-
-        if values is None:
-            values = self.init_values
-
-        return self.write_all_holding_registers(values)
-
-    def adjust_current_offset(self) -> bool:
-        """
-        부하 전류가 0mA이어야 하는 상태에서 호출한다.
-
-        현재 load_current 평균값을 읽고,
-        modbus_master.calculate_zero_current_offset()을 사용해
-        load_current_offset을 보정한다.
-        """
-
+    def read(self) -> Measurements:
         try:
-            measured_sum = 0.0
-            sample_count = 10
+            m = self.client.read_measurements()
+        except DspCommError as err:
+            raise PowerCommError(str(err)) from err
+        with self._state_lock:
+            self._latest = m
+        return m
 
-            for _ in range(sample_count):
-                inputs = self._read_input_registers()
-                measured_sum += float(inputs["load_current"])
-                time.sleep(0.1)
-
-            measured_avg = measured_sum / sample_count
-
-            holding = self._read_holding_registers()
-            current_gain = holding["load_current_gain"]
-            current_offset = holding["load_current_offset"]
-
-            new_offset = modbus_master.calculate_zero_current_offset(
-                measured_load_current_ma=measured_avg,
-                load_current_gain=current_gain,
-                current_offset_mv=current_offset,
-            )
-
-            self.logger.info(
-                "Current offset calibration: measured_avg=%.3f mA, old_offset=%s, new_offset=%s",
-                measured_avg,
-                current_offset,
-                new_offset,
-            )
-
-            result = self._write_holding_registers_by_name(
-                load_current_offset=new_offset
-            )
-
-            if not all(result):
-                self.logger.error("Current offset write failed: %s", result)
-                return False
-
-            time.sleep(0.1)
-
-            inputs = self._read_input_registers()
-            self.logger.info(
-                "Current offset calibrated: load_current=%s mA",
-                inputs["load_current"],
-            )
-            return True
-
-        except Exception as err:
-            self.logger.exception("Error during current offset calibration: %r", err)
-            return False
-
-    def _select_gains(self, voltage: int) -> dict:
-        """
-        target 전압에 맞는 gain 프로파일을 선택한다.
-
-        gain_profiles에서 voltage <= max_voltage 인 가장 낮은 구간의
-        gain 값들을 반환한다. 모든 구간을 초과하면 마지막(가장 높은)
-        프로파일을 사용한다. 프로파일이 없으면 빈 dict를 반환한다.
-        """
-
-        if not self.gain_profiles:
-            return {}
-
-        selected = self.gain_profiles[-1]
-
-        for profile in self.gain_profiles:
-            if voltage <= profile["max_voltage"]:
-                selected = profile
-                break
-        else:
-            self.logger.warning(
-                "Target voltage %s V exceeds all gain profiles, "
-                "using highest profile (max_voltage=%s)",
-                voltage,
-                selected["max_voltage"],
-            )
-
-        return {
-            key: value
-            for key, value in selected.items()
-            if key != "max_voltage"
-        }
-
-    def monitoring_values(self) -> dict:
-        inputs = self._read_input_registers()
-
-        error_status = inputs.get("error_status", 0)
-
-        if error_status != 0:
-            self.logger.error("Power controller error: %s", inputs)
-
-            if error_status & 0x01:
-                self.logger.error("Power Control Error: Over Voltage")
-
-            if error_status & 0x02:
-                self.logger.error("Power Control Error: Over Current")
-
-            if error_status & 0x04:
-                self.logger.error("Power Control Error: Temperature High")
-
-            unknown_bits = error_status & ~0x07
-            if unknown_bits:
-                self.logger.error(
-                    "Power Control Error: Unknown bits 0x%04X",
-                    unknown_bits,
-                )
-
-        return inputs
-
-    def set_target(self, voltage: int = 0, current: int = 0, auto_start: bool = True) -> bool:
-        """
-        목표 전압/전류 설정.
-
-        voltage: V 단위
-        current: mA 단위
-        auto_start=True이면 설정 후 start() 수행
-        """
-
-        self.logger.info(
-            "Setting target: voltage=%s V, current=%s mA",
-            voltage,
-            current,
-        )
-
+    def check(self) -> Measurements:
+        """초기화 확인: 통신, 상태, 설정을 읽는다. TRIP 이면 PowerTripError. RUN 중이면 STOP 시킨다."""
+        m = self.read()
         try:
-            gains = self._select_gains(voltage)
-            if gains:
-                self.logger.info(
-                    "Gain profile applied for %s V: %s",
-                    voltage,
-                    gains,
-                )
+            s = self.client.read_settings()
+        except DspCommError as err:
+            raise PowerCommError(str(err)) from err
+        self.logger.info("POWER check: %s", m.summary())
+        self.logger.info("POWER settings: %s", s)
+        if m.state == STATE_TRIP:
+            raise PowerTripError(m)
+        if m.state == STATE_RUN:
+            self.logger.warning("POWER was RUN at check, sending STOP")
+            self.stop()
+            m = self.read()
+        return m
 
-            result = self._write_holding_registers_by_name(
-                target_voltage=voltage,
-                target_load_current=current,
-                **gains,
-            )
+    # ------------------------------------------------------------------
+    # 지령 계산 (순수 함수 성격, 장치 접근 없음)
+    # ------------------------------------------------------------------
 
-            if not all(result):
-                self.logger.error("Target write failed: %s", result)
-                return False
+    def plan(self, voltage_v: float, current_ma: float, seconds: float) -> PowerPlan:
+        voltage = float(voltage_v)
+        if not self.min_voltage_v <= voltage <= self.max_voltage_v:
+            raise PowerSetupError("voltage {}V out of range {}~{}V".format(
+                voltage, self.min_voltage_v, self.max_voltage_v))
 
-            time.sleep(0.1)
+        requested = float(current_ma)
+        current = requested / 1000.0
+        clamped = False
+        if current > self.max_current_a:
+            self.logger.warning("POWER current %.0fmA exceeds %.3fA, clamped",
+                                requested, self.max_current_a)
+            current, clamped = self.max_current_a, True
+        elif current < self.min_current_a:
+            self.logger.warning("POWER current %.0fmA below %.3fA, raised",
+                                requested, self.min_current_a)
+            current, clamped = self.min_current_a, True
 
-            holding = self._read_holding_registers()
-            self.logger.info("Power setting: %s", holding)
+        oc = min(max(current * self.oc_ratio, self.oc_min_a), self.oc_max_a)
+        secs = int(min(max(round(seconds), 1), MAX_RUN_SECONDS))
+        return PowerPlan(voltage, round(current, 4), round(oc, 4), secs, requested, clamped)
 
-            if auto_start:
-                self.start()
+    def voltage_tolerance(self, target: float) -> float:
+        return max(self.voltage_tolerance_v, abs(target) * self.voltage_tolerance_pct / 100.0)
 
-            op_voltage = None
+    # ------------------------------------------------------------------
+    # 운전
+    # ------------------------------------------------------------------
 
-            for _ in range(10):
-                try:
-                    time.sleep(2.0)
-                except KeyboardInterrupt:
-                    self.logger.info("KeyboardInterrupt during set_target")
-                    self.stop()
-                    return False
-
-                inputs = self.monitoring_values()
-                op_voltage = inputs["load_voltage"]
-                op_current = inputs["load_current"]
-
-                self.logger.info(
-                    "Measured output: load_voltage=%s V, load_current=%s mA",
-                    op_voltage,
-                    op_current,
-                )
-
-                if int(op_voltage) in range(voltage - 1, voltage + 2):
-                    self.logger.info(
-                        "Target voltage setting success: measured=%s V",
-                        op_voltage,
-                    )
-                    return True
-
-            if auto_start:
-                self.stop()
-
-            self.logger.error(
-                "Target voltage setting failed: target=%s V, last measured=%s V",
-                voltage,
-                op_voltage,
-            )
-            return False
-
-        except Exception as err:
-            self.logger.exception("Error during set_target: %r", err)
-
-            if auto_start:
-                try:
-                    self.stop()
-                except Exception as stop_err:
-                    self.logger.error("Stop failed after set_target error: %r", stop_err)
-
-            return False
-
-    def _read_holding_registers(self, info_message: Optional[str] = None) -> dict:
+    def configure(self, plan: PowerPlan) -> None:
+        """STOP 상태에서 설정을 쓰고 FC03 으로 확인. 자동 재시도하지 않는다."""
+        self.logger.info("POWER configure: %s", plan)
         try:
-            results = self.service.read_holding_registers()
-        except Exception as err:
-            self.logger.exception("Error during _read_holding_registers: %r", err)
-            raise
+            self.client.write_settings(plan.voltage, plan.current, plan.oc, plan.seconds)
+            s = self.client.read_settings()
+        except DspException as err:
+            if err.code == 4:
+                raise PowerRejectedError("configure rejected (not STOP or local menu busy)") from err
+            raise PowerSetupError(str(err)) from err
+        except DspCommError as err:
+            raise PowerCommError(str(err)) from err
 
-        if info_message:
-            self.logger.info("%s: values=%s", info_message, results)
-            return results
+        def close(a, b):
+            return abs(a - b) <= 1e-4 * max(1.0, abs(b))
 
-        self.logger.debug("Read holding registers: %s", results)
-        return results
+        if not (close(s.voltage, plan.voltage) and close(s.current, plan.current)
+                and close(s.oc, plan.oc) and s.seconds == plan.seconds):
+            raise PowerSetupError("settings readback mismatch: wrote {} read {}".format(plan, s))
+        self.plan_active = plan
 
-    def _read_input_registers(self) -> dict:
+    def start(self) -> Measurements:
+        """RUN 명령 후 상태 확인, 통신 유지 스레드 시작."""
         try:
-            results = self.service.read_input_registers()
-        except Exception as err:
-            self.logger.exception("Error during _read_input_registers: %r", err)
-            raise
+            self.client.write_run(True)
+        except DspException as err:
+            if err.code == 4:
+                m = self.read()
+                if m.state == STATE_TRIP:
+                    raise PowerTripError(m) from err
+                raise PowerRejectedError("RUN rejected: {}".format(m.summary())) from err
+            raise PowerSetupError(str(err)) from err
+        except DspCommError as err:
+            raise PowerCommError(str(err)) from err
 
-        self.logger.debug("Read input registers: %s", results)
-        return results
+        m = self.read()
+        if m.state != STATE_RUN:
+            raise PowerSetupError("RUN not entered: {}".format(m.summary()))
+        self.logger.info("POWER RUN: %s", m.summary())
+        self._start_keepalive()
+        return m
 
-    def _write_holding_registers_by_name(self, **kwargs):
-        self.logger.debug("Write holding registers: %s", kwargs)
+    def wait_voltage(self, target: Optional[float] = None, timeout: Optional[float] = None) -> Measurements:
+        """출력 전압이 허용 범위에 들어올 때까지 기다린다. 실패하면 PowerSetupError (STOP 은 호출 측 책임)."""
+        if target is None:
+            if self.plan_active is None:
+                raise PowerSetupError("no active plan")
+            target = self.plan_active.voltage
+        timeout = self.voltage_settle_timeout_sec if timeout is None else timeout
+        tol = self.voltage_tolerance(target)
+        deadline = time.monotonic() + timeout
+        while True:
+            m = self.read()
+            self._raise_if_not_running(m)
+            if abs(m.voltage - target) <= tol:
+                self.logger.info("POWER voltage reached: target=%.3fV measured=%.3fV tol=%.3fV",
+                                 target, m.voltage, tol)
+                return m
+            if time.monotonic() >= deadline:
+                raise PowerSetupError("voltage not reached in {:.1f}s: target={:.3f}V measured={:.3f}V tol={:.3f}V".format(
+                    timeout, target, m.voltage, tol))
+            time.sleep(self.voltage_poll_interval_sec)
 
+    def check_running(self) -> Measurements:
+        """측정 중 호출. 통신 유지 스레드의 최신 측정으로 TRIP / STOP / 통신 두절을 판단한다."""
+        with self._state_lock:
+            m = self._latest
+            failures = self._keepalive_failures
+            error = self._keepalive_error
+        if failures >= self.keepalive_fail_limit:
+            raise PowerCommError("keepalive failed {} times: {}".format(failures, error))
+        if m is None:
+            m = self.read()
+        self._raise_if_not_running(m)
+        return m
+
+    def stop(self) -> Measurements:
+        """STOP 명령. 상태와 관계없이 허용된다. 통신 유지 스레드도 멈춘다."""
+        self._stop_keepalive()
         try:
-            results = self.service.write_holding_registers_by_names(**kwargs)
-        except Exception as err:
-            self.logger.exception(
-                "Error during _write_holding_registers_by_name: %r",
-                err,
-            )
-            raise
+            self.client.write_run(False)
+        except (DspCommError, DspException) as err:
+            raise PowerCommError("STOP failed: {!r}".format(err)) from err
+        m = self.read()
+        self.logger.info("POWER STOP: %s", m.summary())
+        if m.state == STATE_RUN:
+            raise PowerCommError("still RUN after STOP: {}".format(m.summary()))
+        self.plan_active = None
+        return m
 
-        self.logger.debug("Write result: %s", results)
-        return results
-
-    def start(self) -> bool:
-        results = self._write_holding_registers_by_name(control_start_stop=1)
-        ok = all(results)
-
-        if ok:
-            self.logger.info("Power controller started")
-        else:
-            self.logger.error("Power controller start failed: %s", results)
-
-        return ok
-
-    def stop(self) -> bool:
-        results = self._write_holding_registers_by_name(control_start_stop=0)
-        ok = all(results)
-
-        if ok:
-            self.logger.info("Power controller stopped")
-        else:
-            self.logger.error("Power controller stop failed: %s", results)
-
-        return ok
-    
-    def write_all_holding_registers(self, values: Optional[dict] = None) -> bool:
-        """
-        Holding Register 전체를 한 번에 설정한다.
-
-        values는 모든 holding register 키를 포함해야 한다.
-        modbus_master.py의 default 값과 섞지 않고 values만 사용한다.
-        """
-
+    def trip_reset(self) -> Measurements:
+        """HOST RESET 명령에서만 호출. 해제 전 트립 정보를 로그로 남긴다."""
+        before = self.read()
+        self.logger.warning("POWER trip reset requested, before: %s", before.summary())
         try:
-            if values is None:
-                self.logger.error("Holding register values are required")
-                return False
+            self.client.write_trip_reset()
+        except DspException as err:
+            if err.code == 4:
+                raise PowerRejectedError("trip reset rejected: {}".format(before.summary())) from err
+            raise PowerSetupError(str(err)) from err
+        except DspCommError as err:
+            raise PowerCommError(str(err)) from err
+        after = self.read()
+        self.logger.info("POWER trip reset, after: %s", after.summary())
+        if after.state != STATE_STOP:
+            raise PowerSetupError("not STOP after trip reset: {}".format(after.summary()))
+        return after
 
-            holding_words = [0] * modbus_master.HOLDING_REGISTER_WORD_COUNT
-            written_keys = set()
+    # ------------------------------------------------------------------
+    # 내부
+    # ------------------------------------------------------------------
 
-            for key, value in values.items():
-                resolved_key = modbus_master.resolve_holding_key(key)
+    @staticmethod
+    def _raise_if_not_running(m: Measurements) -> None:
+        if m.state == STATE_TRIP:
+            raise PowerTripError(m)
+        if m.state != STATE_RUN:
+            raise PowerStoppedError(m)
 
-                if resolved_key not in modbus_master.HOLDING_REGISTER_MAP:
-                    self.logger.error("Unknown holding register name: %s", key)
-                    return False
+    def _start_keepalive(self):
+        self._stop_keepalive()
+        with self._state_lock:
+            self._keepalive_failures = 0
+            self._keepalive_error = None
+        self._keepalive_stop.clear()
+        self._keepalive_thread = threading.Thread(target=self._keepalive_loop,
+                                                  name="power-keepalive", daemon=True)
+        self._keepalive_thread.start()
 
-                definition = modbus_master.HOLDING_REGISTER_MAP[resolved_key]
-                encoded_value = modbus_master.encode_register_value(
-                    definition,
-                    value,
-                )
+    def _stop_keepalive(self):
+        thread = self._keepalive_thread
+        if thread is not None:
+            self._keepalive_stop.set()
+            thread.join(timeout=2.0)
+            self._keepalive_thread = None
 
-                holding_words[
-                    definition.offset:definition.end_offset
-                ] = encoded_value
-                written_keys.add(resolved_key)
-
-            missing_keys = [
-                register.key
-                for register in modbus_master.HOLDING_REGISTERS
-                if register.key not in written_keys
-            ]
-
-            if missing_keys:
-                self.logger.error(
-                    "Missing holding register values: %s",
-                    ", ".join(missing_keys),
-                )
-                return False
-
-            ok = self.service.write_holding_registers(
-                0,
-                holding_words,
-            )
-
-            if not ok:
-                self.logger.error("Write all holding registers failed")
-                return False
-
-            time.sleep(0.05)
-
-            self._read_holding_registers(
-                info_message="All holding registers written successfully"
-            )
-            return True
-
-        except Exception as err:
-            self.logger.exception("Error during write_all_holding_registers: %r", err)
-            return False
+    def _keepalive_loop(self):
+        """RUN 중 주기적으로 FC04 를 읽어 DSP 10초 무통신 STOP 을 막고, 최신 상태를 보관한다."""
+        while not self._keepalive_stop.wait(self.keepalive_interval_sec):
+            try:
+                m = self.client.read_measurements()
+            except (DspCommError, DspException) as err:
+                with self._state_lock:
+                    self._keepalive_failures += 1
+                    self._keepalive_error = repr(err)
+                    failures = self._keepalive_failures
+                self.logger.warning("POWER keepalive failed (%d): %r", failures, err)
+                continue
+            with self._state_lock:
+                self._latest = m
+                self._keepalive_failures = 0
+                self._keepalive_error = None
+            if m.state != STATE_RUN:
+                self.logger.error("POWER left RUN: %s", m.summary())
+                return  # check_running() 이 최신 상태로 판단한다
 
 
-def parse_int(value: str) -> int:
-    return int(value, 0)
+# ----------------------------------------------------------------------
+# 단독 실행 (장치 확인용)
+# ----------------------------------------------------------------------
 
+def main():
+    p = argparse.ArgumentParser(description="ERS POWER (ESR_DSP) controller")
+    p.add_argument("--port", default="/dev/ttyAMA2")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("check")
+    r = sub.add_parser("run", help="configure + RUN + keepalive, then STOP")
+    r.add_argument("voltage", type=float)
+    r.add_argument("current_ma", type=float)
+    r.add_argument("--hold", type=float, default=15.0, help="RUN 유지 시간(s)")
+    r.add_argument("--no-wait", action="store_true", help="전압 도달 판정 생략")
+    sub.add_parser("reset", help="TRIP 해제")
+    args = p.parse_args()
 
-def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="ERS Power Controller standalone test"
-    )
-
-    parser.add_argument(
-        "--port",
-        default=modbus_master.DEFAULT_PORT,
-        help=f"Serial port. Default: {modbus_master.DEFAULT_PORT}",
-    )
-
-    parser.add_argument(
-        "--baudrate",
-        type=int,
-        default=modbus_master.DEFAULT_BAUDRATE,
-        help=f"Baudrate. Default: {modbus_master.DEFAULT_BAUDRATE}",
-    )
-
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=modbus_master.DEFAULT_TIMEOUT,
-        help=f"Timeout seconds. Default: {modbus_master.DEFAULT_TIMEOUT}",
-    )
-
-    parser.add_argument(
-        "--device-id",
-        type=parse_int,
-        default=modbus_master.DEFAULT_DEVICE_ID,
-        help=f"Modbus device id. Default: {modbus_master.DEFAULT_DEVICE_ID:#x}",
-    )
-
-    parser.add_argument(
-        "--init-default",
-        action="store_true",
-        help="Write default holding register values before test",
-    )
-
-    parser.add_argument(
-        "--voltage",
-        type=int,
-        default=0,
-        help="Target voltage in V. If 0, target setting is skipped.",
-    )
-
-    parser.add_argument(
-        "--current",
-        type=int,
-        default=0,
-        help="Target load current in mA",
-    )
-
-    parser.add_argument(
-        "--start",
-        action="store_true",
-        help="Start output during test",
-    )
-
-    parser.add_argument(
-        "--stop-only",
-        action="store_true",
-        help="Only send stop command and exit",
-    )
-
-    parser.add_argument(
-        "--monitor",
-        type=int,
-        default=5,
-        help="Monitoring count. Default: 5",
-    )
-
-    parser.add_argument(
-        "--interval",
-        type=float,
-        default=1.0,
-        help="Monitoring interval seconds. Default: 1.0",
-    )
-
-    parser.add_argument(
-        "--cal-offset",
-        action="store_true",
-        help="Run current offset calibration",
-    )
-
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
-        help="Logging level. Default: INFO",
-    )
-
-    args = parser.parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
-    logger = logging.getLogger("ERS_Power_Control_Test")
-
-    ctrl = None
-
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    power = power_controller(comport=args.port)
     try:
-        print("========================================")
-        print("ERS Power Controller Test")
-        print("========================================")
-        print(f"Port      : {args.port}")
-        print(f"Baudrate  : {args.baudrate}")
-        print(f"Timeout   : {args.timeout}")
-        print(f"Device ID : 0x{args.device_id:02X}")
-        print("========================================")
-
-        ctrl = power_controller(
-            comport=args.port,
-            baudrate=args.baudrate,
-            timeout=args.timeout,
-            device_id=args.device_id,
-            logger=logger,
-        )
-
-        if args.stop_only:
-            print("\n>> Stop only mode")
-            ctrl.stop()
-            return
-
-        if args.init_default:
-            print("\n>> Writing default holding registers...")
-            default_values = {
-                register.key: register.default_value
-                for register in modbus_master.HOLDING_REGISTERS
-            }
-            if not ctrl.set_init_values(default_values):
-                print(">> Initialization failed")
-                return
-
-        print("\n>> Reading holding registers...")
-        holding = ctrl._read_holding_registers()
-        for key, value in holding.items():
-            print(f"  {key}: {value}")
-
-        print("\n>> Reading input registers...")
-        inputs = ctrl._read_input_registers()
-        for key, value in inputs.items():
-            print(f"  {key}: {value}")
-
-        if args.cal_offset:
-            print("\n>> Running current offset calibration...")
-            if not ctrl.adjust_current_offset():
-                print(">> Current offset calibration failed")
-                return
-
-        if args.voltage > 0:
-            print("\n>> Setting target registers...")
-            result = ctrl._write_holding_registers_by_name(
-                target_voltage=args.voltage,
-                target_load_current=args.current,
-            )
-
-            if not all(result):
-                print(f">> Target setting failed: {result}")
-                return
-
-            time.sleep(0.1)
-
-            holding = ctrl._read_holding_registers()
-            print(f"  target_voltage      : {holding.get('target_voltage')}")
-            print(f"  target_load_current : {holding.get('target_load_current')}")
-
-        if args.start:
-            print("\n>> Starting output...")
-            if not ctrl.start():
-                print(">> Start failed")
-                return
+        if args.cmd == "check":
+            power.check()
+        elif args.cmd == "reset":
+            power.trip_reset()
         else:
-            print("\n>> Output start skipped. Use --start to enable output.")
-
-        print("\n>> Monitoring...")
-        for index in range(args.monitor):
-            values = ctrl.monitoring_values()
-
-            load_voltage = values.get("load_voltage", 0)
-            load_current = values.get("load_current", 0)
-            input_voltage = values.get("input_voltage", 0)
-            error_status = values.get("error_status", 0)
-
-            print(
-                f"[{index + 1}/{args.monitor}] "
-                f"Vin={input_voltage} V, "
-                f"Vload={load_voltage} V, "
-                f"Iload={load_current} mA, "
-                f"Error=0x{error_status:04X}"
-            )
-
-            if error_status != 0:
-                print("\n>> Power controller error detected")
-                print(f">> error_status = 0x{error_status:04X} ({error_status})")
-
-                if error_status & 0x01:
-                    print(">> Error Bit 0: Over Voltage")
-
-                if error_status & 0x02:
-                    print(">> Error Bit 1: Over Current")
-
-                if error_status & 0x04:
-                    print(">> Error Bit 2: Temperature High")
-
-                unknown_bits = error_status & ~0x07
-                if unknown_bits:
-                    print(f">> Unknown error bits: 0x{unknown_bits:04X}")
-
-                print(">> Stopping output immediately...")
-
-                try:
-                    ctrl.stop()
-                except Exception as stop_err:
-                    logger.error("Stop failed after error_status: %r", stop_err)
-                    print(f">> Stop failed: {stop_err}")
-
-                print(">> Test aborted because error_status is not zero")
-                return
-
-            time.sleep(args.interval)
-
-        if args.start:
-            print("\n>> Stopping output...")
-            ctrl.stop()
-
-        print("\n>> Test completed successfully")
-
-    except KeyboardInterrupt:
-        print("\n>> KeyboardInterrupt")
-
-        if ctrl is not None:
+            power.check()
+            plan = power.plan(args.voltage, args.current_ma, args.hold + 30)
+            power.configure(plan)
+            power.start()
             try:
-                print(">> Stopping output...")
-                ctrl.stop()
-            except Exception as err:
-                logger.error("Stop failed during KeyboardInterrupt: %r", err)
-
-    except Exception as err:
-        logger.exception("Test failed: %r", err)
-
-        if ctrl is not None:
-            try:
-                print(">> Stopping output after error...")
-                ctrl.stop()
-            except Exception as stop_err:
-                logger.error("Stop failed after error: %r", stop_err)
-
+                if not args.no_wait:
+                    power.wait_voltage()
+                end = time.monotonic() + args.hold
+                while time.monotonic() < end:
+                    m = power.check_running()
+                    logging.info("running: %s", m.summary())
+                    time.sleep(3.0)
+            finally:
+                power.stop()
+    except PowerError as err:
+        logging.error("%s: %s", type(err).__name__, err)
+        return 1
     finally:
-        if ctrl is not None:
-            ctrl.close()
+        power.close()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
