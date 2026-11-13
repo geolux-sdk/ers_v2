@@ -1,130 +1,148 @@
-"""[레거시] 기존(v2) 하드웨어용 GPIO / UART 점검 스크립트.
+"""2027Version GPIO / POWER 보드 통신 점검 스크립트.
 
-주의 — 2027Version 하드웨어에서는 핀 정의가 맞지 않는다 (docs/pi-setup-2027.md 1절):
-  - GPIO23 은 이제 ADC_RESET 이다. 이 스크립트는 23 을 2초마다 토글하고 끝날 때 LOW 로 두므로
-    ADC 가 반복 리셋된다.
-  - GPIO22 는 이제 릴레이 전원 출력인데, 여기서는 입력으로 읽는다.
-  - GPIO20(부스터), 45(기존 릴레이 전원)는 2027Version 에서 쓰지 않는다.
-  - /dev/ttyAMA2 는 이제 POWER 보드 RS485(9600 8E1)인데, 여기서는 115200 8N1 로 데이터를 보낸다.
-  - GPIO21(POWER_HOLD)은 건드리지 않는다.
-2027Version GPIO 확인은 raspi-gpio 를 쓴다 (docs/pi-setup-2027.md 6절).
+핀 정의: docs/pi-setup-2027.md 1절 (pi_gpio.py 와 같음)
+  GPIO21 POWER_HOLD  — 읽기만 한다. 이 스크립트는 절대 출력하지 않는다(LOW 가 되면 보드 전원 차단).
+  GPIO22 RELAY_PWREN — 평상시 LOW
+  GPIO23 ADC_RESET   — LOW = 리셋, 평상시 HIGH
+  GPIO24 TEST_MODE   — 평상시 LOW
+
+사용 예 (Pi, ~/ers_v2 에서):
+  python3 DeviceTest/GPIOPortTest.py status                 # 21~24 상태
+  python3 DeviceTest/GPIOPortTest.py toggle 24               # 2초 간격 5회 토글 후 평상시 레벨로
+  python3 DeviceTest/GPIOPortTest.py toggle 22 --count 0     # Ctrl+C 까지
+  python3 DeviceTest/GPIOPortTest.py adc-reset --pulse 0.1   # ADC 리셋 펄스 1회
+  python3 DeviceTest/GPIOPortTest.py cycle                   # 22·24 토글 + POWER 보드(FC04) 읽기 반복
+
+끝나면(Ctrl+C 포함) 22·24 LOW, 23 HIGH 로 되돌린다. GPIO.cleanup() 은 호출하지 않는다.
+ERS(ers-v2 서비스)가 실행 중이면 같은 핀·포트를 쓰므로 먼저 멈춘다.
 """
+
+import argparse
+import os
+import subprocess
+import sys
 import time
-import RPi.GPIO as GPIO
-import serial
 
-# =========================
-# GPIO 설정
-# =========================
-GPIO_OUT_PINS = [20, 23, 24, 45]
-GPIO_IN_PIN = 22
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 
-GPIO.setmode(GPIO.BCM)
+import pi_gpio  # noqa: E402
 
-# 출력 핀 설정
-for pin in GPIO_OUT_PINS:
-    GPIO.setup(pin, GPIO.OUT)
-    GPIO.output(pin, False)
-
-# 입력 핀 설정
-GPIO.setup(GPIO_IN_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
-
-print("GPIO INIT DONE")
-
-# =========================
-# UART 설정
-# =========================
-UART_PORTS = {
-    "UART3": "/dev/ttyAMA2",
-    "UART4": "/dev/ttyAMA3",
+PIN_NAMES = {
+    pi_gpio.POWER_HOLD: "POWER_HOLD",
+    pi_gpio.RELAY_PWREN: "RELAY_PWREN",
+    pi_gpio.ADC_RESET: "ADC_RESET",
+    pi_gpio.TEST_MODE_PIN: "TEST_MODE",
 }
+TOGGLE_PINS = (pi_gpio.RELAY_PWREN, pi_gpio.TEST_MODE_PIN)
 
-serial_ports = {}
 
-for name, port in UART_PORTS.items():
+def read_pin(pin):
+    """raspi-gpio 로 읽는다. RPi.GPIO 로 setup 하지 않으므로 핀 설정을 바꾸지 않는다."""
     try:
-        ser = serial.Serial(port=port, baudrate=115200, timeout=0.5)
-        serial_ports[name] = ser
-        print(f"[OK] {name} OPEN: {port}")
-    except Exception as e:
-        print(f"[FAIL] {name} ({port}): {e}")
+        out = subprocess.run(["raspi-gpio", "get", str(pin)], capture_output=True,
+                             text=True, timeout=2).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as err:
+        return "읽기 실패: {}".format(err)
+    return out or "(응답 없음)"
 
-print("\n===== TEST START =====\n")
 
-state = False
-counter = 0
+def show_status():
+    for pin, name in sorted(PIN_NAMES.items()):
+        print("  GPIO{} {:11s} {}".format(pin, name, read_pin(pin)))
 
-try:
-    while True:
-        counter += 1
 
-        # =========================
-        # GPIO 출력 토글
-        # =========================
-        state = not state
+def set_pin(gpio, pin, level):
+    if pin == pi_gpio.POWER_HOLD:
+        raise SystemExit("GPIO21(POWER_HOLD)은 출력하지 않는다")
+    pi_gpio.GPIO.output(pin, pi_gpio.GPIO.HIGH if level else pi_gpio.GPIO.LOW)
+    print("  GPIO{} {} -> {}".format(pin, PIN_NAMES[pin], "HIGH" if level else "LOW"))
 
-        for pin in GPIO_OUT_PINS:
-            GPIO.output(pin, state)
 
-        print("\n==============================")
-        print(f"GPIO OUTPUT STATE = {'ON' if state else 'OFF'}")
-
-        for pin in GPIO_OUT_PINS:
-            print(f"GPIO{pin} -> {'HIGH' if state else 'LOW'}")
-
-        # =========================
-        # GPIO22 입력 읽기
-        # =========================
-        input_val = GPIO.input(GPIO_IN_PIN)
-        print(f"GPIO22 INPUT -> {'HIGH' if input_val else 'LOW'}")
-
-        # =========================
-        # UART 송신
-        # =========================
-        for name, ser in serial_ports.items():
-            msg = f"[{name}] TEST {counter}\r\n"
-            try:
-                ser.write(msg.encode())
-                print(f"TX {name} -> {msg.strip()}")
-            except serial.SerialException as e:
-                print(f"[FAIL] TX {name}: {e}")
-
-        # 수신 대기
-        time.sleep(0.2)
-
-        # =========================
-        # UART 수신
-        # =========================
-        for name, ser in serial_ports.items():
-            try:
-                while ser.in_waiting:
-                    data = ser.readline().decode(errors="ignore").strip()
-                    print(f"RX {name} -> {data}")
-            except serial.SerialException as e:
-                print(f"[FAIL] RX {name}: {e}")
-
-        print("==============================")
-
-        time.sleep(2)
-
-except KeyboardInterrupt:
-    print("\n종료")
-
-finally:
-    for ser in serial_ports.values():
-        try:
-            ser.close()
-        except serial.SerialException as e:
-            print(f"[FAIL] serial close: {e}")
-
-    for pin in GPIO_OUT_PINS:
-        try:
-            GPIO.output(pin, False)
-        except RuntimeError as e:
-            print(f"[FAIL] GPIO{pin} LOW: {e}")
-
+def read_power(client):
+    if client is None:
+        return
     try:
-        GPIO.cleanup()
-    except RuntimeError as e:
-        print(f"[FAIL] GPIO cleanup: {e}")
-    print("정리 완료")
+        m = client.read_measurements()
+        print("  POWER " + m.summary())
+    except Exception as err:  # noqa: BLE001
+        print("  POWER 읽기 실패: {!r}".format(err))
+
+
+def open_power(port):
+    try:
+        from dsp_modbus import DspModbusClient
+        return DspModbusClient(port)
+    except Exception as err:  # noqa: BLE001
+        print("[WARN] POWER 보드 포트 열기 실패 ({}): {!r}".format(port, err))
+        return None
+
+
+def loop(count, interval, body):
+    n = 0
+    while count == 0 or n < count:
+        n += 1
+        print("[{}] {}".format(n, time.strftime("%H:%M:%S")))
+        body(n)
+        time.sleep(interval)
+
+
+def main():
+    p = argparse.ArgumentParser(description="2027Version GPIO / POWER check")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("status", help="GPIO 21~24 상태")
+    t = sub.add_parser("toggle", help="22 또는 24 토글")
+    t.add_argument("pin", type=int, choices=TOGGLE_PINS)
+    t.add_argument("--count", type=int, default=5, help="0 = Ctrl+C 까지")
+    t.add_argument("--interval", type=float, default=2.0)
+    r = sub.add_parser("adc-reset", help="GPIO23 LOW 펄스")
+    r.add_argument("--pulse", type=float, default=0.1, help="LOW 유지 시간(s)")
+    c = sub.add_parser("cycle", help="22·24 토글 + POWER 보드 읽기 반복")
+    c.add_argument("--count", type=int, default=0, help="0 = Ctrl+C 까지")
+    c.add_argument("--interval", type=float, default=2.0)
+    c.add_argument("--power-port", default="/dev/ttyAMA2")
+    args = p.parse_args()
+
+    if args.cmd == "status":
+        show_status()
+        return 0
+
+    gpio = pi_gpio.GPIOController()     # 22 LOW, 23 HIGH, 24 LOW 로 시작 (21 은 건드리지 않음)
+    client = None
+    try:
+        if args.cmd == "toggle":
+            state = {"level": False}
+
+            def body(_n):
+                state["level"] = not state["level"]
+                set_pin(gpio, args.pin, state["level"])
+            loop(args.count, args.interval, body)
+
+        elif args.cmd == "adc-reset":
+            set_pin(gpio, pi_gpio.ADC_RESET, False)
+            time.sleep(args.pulse)
+            set_pin(gpio, pi_gpio.ADC_RESET, True)
+
+        elif args.cmd == "cycle":
+            client = open_power(args.power_port)
+
+            def body(n):
+                level = n % 2 == 1
+                for pin in TOGGLE_PINS:
+                    set_pin(gpio, pin, level)
+                read_power(client)
+            loop(args.count, args.interval, body)
+
+    except KeyboardInterrupt:
+        print("\n[STOP] interrupted")
+    finally:
+        gpio.close()                    # 평상시 레벨로 복귀
+        if client is not None:
+            client.close()
+        print("[DONE] 평상시 레벨로 복귀")
+        show_status()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
