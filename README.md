@@ -181,8 +181,8 @@ ERS V2 Controller는 외부 프로그램과는 UDP로 통신하고, Raspberry Pi
 외부 프로그램
   <-> UDP 127.0.0.1:3700/3800
 ERS_Main.py
-  <-> /dev/ttyAMA3 relay board
-  <-> /dev/ttyAMA2 power controller
+  <-> /dev/ttyAMA2 relay board (UART5, GPIO12/13)
+  <-> /dev/ttyAMA1 power controller (UART3, GPIO4/5)
   <-> /dev/ttyACM0 ADC device
   <-> GPIO24 test mode pin
 ```
@@ -323,13 +323,13 @@ ERS는 TRIP을 스스로 해제하지 않는다. 같은 조건이면 다시 과�
 
 ### Relay serial 통신
 
-릴레이 보드는 `settings.json`의 `relay.comport`에 설정된 `/dev/ttyAMA3` 포트를 사용합니다.
+릴레이 보드는 `settings.json`의 `relay.comport`에 설정된 `/dev/ttyAMA2` 포트를 사용합니다.
 
 ```json
 "relay": {
     "inport_num": 13,
     "outport_num": 48,
-    "comport": "/dev/ttyAMA3"
+    "comport": "/dev/ttyAMA2"
 }
 ```
 
@@ -344,7 +344,7 @@ ERS는 작업 파일을 읽을 때 각 command row의 길이가 `work_order` 길
 
 ```json
 "power": {
-    "comport": "/dev/ttyAMA2",
+    "comport": "/dev/ttyAMA1",
     "address": 1,
     "max_current_a": 1.0,
     "oc_ratio": 1.5,

@@ -56,7 +56,7 @@ class mySettings:
                 "P11": 13,
             },
             "outport_num": 48,
-            "comport": "/dev/ttyAMA3",
+            "comport": "/dev/ttyAMA2",
         },
         "adc": {
             "port": "/dev/ttyACM0",
@@ -75,7 +75,7 @@ class mySettings:
         },
         "power": {
             # 새 POWER 보드(ESR_DSP). docs/power-board-dsp-modbus.md 10.1절
-            "comport": "/dev/ttyAMA2",
+            "comport": "/dev/ttyAMA1",
             "address": 1,
             "min_voltage_v": 1.0,
             "max_voltage_v": 300.0,

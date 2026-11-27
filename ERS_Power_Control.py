@@ -80,7 +80,7 @@ class PowerPlan:
 class power_controller:
     def __init__(
         self,
-        comport: str = "/dev/ttyAMA2",
+        comport: str = "/dev/ttyAMA1",
         address: int = 1,
         min_voltage_v: float = 1.0,
         max_voltage_v: float = 300.0,
@@ -361,7 +361,7 @@ class power_controller:
 
 def main():
     p = argparse.ArgumentParser(description="ERS POWER (ESR_DSP) controller")
-    p.add_argument("--port", default="/dev/ttyAMA2")
+    p.add_argument("--port", default="/dev/ttyAMA1")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("check")
     r = sub.add_parser("run", help="configure + RUN + keepalive, then STOP")

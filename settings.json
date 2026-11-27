@@ -44,7 +44,7 @@
             "P11": 13
         },
         "outport_num": 48,
-        "comport": "/dev/ttyUSB0"
+        "comport": "/dev/ttyAMA2"
     },
     "adc": {
         "port": "/dev/ttyACM0",
@@ -59,7 +59,7 @@
         "recv_port": 3700
     },
     "power": {
-        "comport": "/dev/ttyAMA2",
+        "comport": "/dev/ttyAMA1",
         "address": 1,
         "min_voltage_v": 1.0,
         "max_voltage_v": 300.0,

@@ -17,7 +17,7 @@ class relay_board_controller:
         self,
         inport_num=13,
         outport_num=48,
-        comport="/dev/ttyAMA3",
+        comport="/dev/ttyAMA2",
         baudrate=115200,
         port_order=None,
         timeout=1.0,
@@ -233,9 +233,9 @@ def process_args() -> argparse.Namespace:
     parser.add_argument(
         "-p",
         "--port",
-        default="/dev/ttyAMA3",
+        default="/dev/ttyAMA2",
         type=str,
-        help="COM port (default: /dev/ttyACM3)",
+        help="COM port (default: %(default)s)",
     )
     parser.add_argument(
         "-b",

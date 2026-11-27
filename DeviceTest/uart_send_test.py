@@ -4,7 +4,7 @@
 수신된 바이트가 있으면 함께 출력한다(TX-RX 점퍼 시 루프백 확인 가능).
 
 사용 예:
-    python3 uart_send_test.py                       # /dev/ttyAMA2, 9600bps, 1초마다 "Hello", Ctrl+C 까지
+    python3 uart_send_test.py                       # /dev/ttyAMA1, 9600bps, 1초마다 "Hello", Ctrl+C 까지
     python3 uart_send_test.py --count 10            # 10회만
     python3 uart_send_test.py --listen              # 수신만 (송신 안 함)
     python3 uart_send_test.py --data "HELLO"
@@ -20,7 +20,7 @@ import serial
 
 def parse_args():
     p = argparse.ArgumentParser(description="UART send test")
-    p.add_argument("--port", default="/dev/ttyAMA2", help="serial port (default: %(default)s)")
+    p.add_argument("--port", default="/dev/ttyAMA1", help="serial port (default: %(default)s)")
     p.add_argument("--baud", type=int, default=9600, help="baudrate (default: %(default)s)")
     p.add_argument("--count", type=int, default=0, help="send count, 0 = forever (default: %(default)s)")
     p.add_argument("--interval", type=float, default=1.0, help="seconds between sends (default: %(default)s)")

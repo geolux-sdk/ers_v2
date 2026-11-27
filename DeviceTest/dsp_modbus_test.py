@@ -25,7 +25,7 @@ import struct
 import sys
 import time
 
-DEFAULT_PORT = "/dev/ttyAMA2"
+DEFAULT_PORT = "/dev/ttyAMA1"
 DEFAULT_ADDR = 1
 BAUD = 9600
 FRAME_GAP_S = 0.005        # 요청 간 최소 간격 (t3.5 = 4.011ms 보다 크게)

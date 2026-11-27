@@ -100,7 +100,7 @@ def main():
     c = sub.add_parser("cycle", help="22·24 토글 + POWER 보드 읽기 반복")
     c.add_argument("--count", type=int, default=0, help="0 = Ctrl+C 까지")
     c.add_argument("--interval", type=float, default=2.0)
-    c.add_argument("--power-port", default="/dev/ttyAMA2")
+    c.add_argument("--power-port", default="/dev/ttyAMA1")
     args = p.parse_args()
 
     if args.cmd == "status":
