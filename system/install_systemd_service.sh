@@ -3,11 +3,11 @@ set -euo pipefail
 
 SERVICE_NAME="ers-v2.service"
 PROJECT_DIR="/home/pi/ers_v2"
-SERVICE_SOURCE="${PROJECT_DIR}/ers-v2.service.example"
+SERVICE_SOURCE="${PROJECT_DIR}/system/ers-v2.service.example"
 SERVICE_TARGET="/etc/systemd/system/${SERVICE_NAME}"
 
 if [[ "${EUID}" -ne 0 ]]; then
-    echo "Run as root: sudo bash ${PROJECT_DIR}/install_systemd_service.sh" >&2
+    echo "Run as root: sudo bash ${PROJECT_DIR}/system/install_systemd_service.sh" >&2
     exit 1
 fi
 

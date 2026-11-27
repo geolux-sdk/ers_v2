@@ -7,7 +7,10 @@ import sys
 import time
 from typing import Any, Dict
 
-from ERS_ADC_Control import (
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from ERS_ADC_Control import (  # noqa: E402
     DEFAULT_BAUDRATE,
     DEFAULT_MEASUREMENT_SETTLE_DELAY_SEC,
     DEFAULT_PORT,

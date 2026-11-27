@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 git pull --ff-only origin main
 sudo systemctl restart ers-v2.service

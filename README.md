@@ -131,13 +131,13 @@ Raspberry Pi의 Python 3.9.2로 `ERS_Main.py`를 실행합니다.
 
 ```bash
 cd /home/pi/ers_v2
-sudo bash install_systemd_service.sh
+sudo bash system/install_systemd_service.sh
 ```
 
 수동으로 적용하려면 아래 명령을 실행합니다.
 
 ```bash
-sudo cp /home/pi/ers_v2/ers-v2.service.example /etc/systemd/system/ers-v2.service
+sudo cp /home/pi/ers_v2/system/ers-v2.service.example /etc/systemd/system/ers-v2.service
 sudo systemctl daemon-reload
 sudo systemctl enable ers-v2.service
 sudo systemctl restart ers-v2.service
