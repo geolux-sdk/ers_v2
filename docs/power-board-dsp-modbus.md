@@ -24,7 +24,7 @@ ESR_DSP 저장소에서 위 파일들은 아직 커밋되지 않은 수정 상�
 
 | 항목 | Raspberry Pi 쪽 | POWER 보드(DSP) 쪽 |
 |---|---|---|
-| 장치 | `/dev/ttyAMA2` (UART3) | TMS320F2800155 SCIB |
+| 장치 | `/dev/ttyAMA1` (UART3). 2026-11-24 Pi 교체 전에는 `/dev/ttyAMA2`였다 ([pi-setup-2027.md](pi-setup-2027.md) 2.3절) | TMS320F2800155 SCIB |
 | 핀 | TX GPIO4, RX GPIO5 | TX GPIO12, RX GPIO13, 방향 제어 GPIO20 |
 | 트랜시버 | RS485 IC, **자동 방향 전환** (소프트웨어 제어 없음) | ADM3483, DE와 /RE를 묶어 GPIO20으로 제어 |
 
@@ -290,7 +290,7 @@ FC06의 정상 응답은 요청과 똑같은 8바이트다.
 
 | 항목 | 기존 보드 (`main` 브랜치 코드) | 새 보드 (ESR_DSP) |
 |---|---|---|
-| 포트 | `/dev/ttyAMA2` | `/dev/ttyAMA2` (같음) |
+| 포트 | `/dev/ttyAMA2` | 같은 UART3. 장치 이름은 Pi 교체(2026-11-24) 후 `/dev/ttyAMA1` |
 | 속도, 형식 | 115200bps, 8N1 | **9600bps, 8E1** |
 | 슬레이브 주소 | 241 (0xF1) | **1** |
 | 주소 표기 | 40001~, 30001~ | 0부터 시작하는 PDU 주소 |

@@ -35,7 +35,7 @@ ERS는 TRIP을 스스로 해제하지 않는다. 같은 조건이면 다시 과�
 `RESETFAIL` 뒤에 오는 원인 메시지 예:
 
 ```text
-DEVICE NOT FOUND: ADC=/dev/ttyACM0, RELAY=/dev/ttyUSB0
+DEVICE NOT FOUND: ADC=/dev/ttyACM0, RELAY=/dev/ttyAMA2
 POWER TRIP: cause=OVER_CURRENT peak=0.812A
 POWER COMM FAIL
 POWER INIT FAIL
